@@ -11,7 +11,7 @@ Executor provides two MCP endpoints:
 
 ### Authenticated MCP Endpoint
 
-```
+```http
 POST /v1/mcp
 GET /v1/mcp
 DELETE /v1/mcp
@@ -41,7 +41,7 @@ WORKOS_API_KEY=sk_...
 
 ### Anonymous MCP Endpoint
 
-```
+```http
 POST /v1/mcp/anonymous
 GET /v1/mcp/anonymous
 DELETE /v1/mcp/anonymous
@@ -247,7 +247,7 @@ The authenticated MCP endpoint provides OAuth 2.0 discovery metadata:
 
 ### Protected Resource Metadata
 
-```
+```http
 GET /.well-known/oauth-protected-resource?resource=https://...
 ```
 
@@ -261,7 +261,7 @@ GET /.well-known/oauth-protected-resource?resource=https://...
 
 ### Authorization Server Metadata
 
-```
+```http
 GET /.well-known/oauth-authorization-server
 ```
 

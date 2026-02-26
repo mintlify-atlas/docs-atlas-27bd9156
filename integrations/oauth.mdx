@@ -21,7 +21,7 @@ OAuth is required for authenticated MCP endpoints in cloud deployments. Self-hos
 
 ### Protected Resource Metadata
 
-```
+```http
 GET /.well-known/oauth-protected-resource
 ```
 
@@ -51,7 +51,7 @@ curl https://your-deployment.convex.site/.well-known/oauth-protected-resource
 
 ### Authorization Server Metadata
 
-```
+```http
 GET /.well-known/oauth-authorization-server
 ```
 
@@ -60,7 +60,7 @@ Proxies the upstream WorkOS AuthKit OAuth 2.0 metadata.
 **Response:**
 
 Forwards the response from:
-```
+```http
 https://your-authkit-domain.authkit.app/.well-known/oauth-authorization-server
 ```
 
@@ -208,7 +208,7 @@ GET /.well-known/oauth-protected-resource?resource=https://your-deployment.conve
 
 **Status:** 401  
 **Headers:**
-```
+```http
 WWW-Authenticate: Bearer error="unauthorized", error_description="Authorization needed", resource_metadata="https://..."
 ```
 
@@ -234,7 +234,7 @@ Expected JWT structure:
 ### JWKS Endpoint
 
 Executor fetches public keys from:
-```
+```http
 https://your-authkit-domain.authkit.app/oauth2/jwks
 ```
 
