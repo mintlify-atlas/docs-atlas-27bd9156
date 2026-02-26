@@ -1,0 +1,279 @@
+---
+title: Self-Hosting
+description: Deploy Executor locally with the binary CLI and managed runtime
+---
+
+Executor provides a fully self-contained binary installation that manages its own runtime, including a local Convex backend, Node.js runtime, and packaged web UI. No global dependencies required.
+
+## Quick Install
+
+Install Executor with a single command:
+
+```bash
+curl -fsSL https://executor.sh/install | bash
+```
+
+The installer will:
+- Download the executor binary to `~/.executor/bin/`
+- Install the managed runtime to `~/.executor/runtime/`
+- Start background services automatically
+- Add executor to your PATH
+
+## Managed Runtime
+
+The binary manages a complete runtime environment under `~/.executor/runtime/`:
+
+- **Convex Local Backend**: Managed `convex-local-backend` binary
+- **Node.js Runtime**: Bundled Node.js v22.22.0 for the web UI
+- **Web UI**: Packaged Next.js production build
+- **Local Data**: SQLite database and file storage
+- **Configuration**: Instance credentials and port settings
+
+<Note>
+  The managed runtime provides local-first operation without requiring cloud dependencies or internet connectivity during execution.
+</Note>
+
+## Binary CLI Commands
+
+After installation, use these commands to manage your Executor instance:
+
+<Steps>
+  <Step title="Check Status">
+    Run a health check to verify all services are running:
+    
+    ```bash
+    executor doctor
+    ```
+    
+    For detailed diagnostics:
+    
+    ```bash
+    executor doctor --verbose
+    ```
+  </Step>
+
+  <Step title="Start Services">
+    Start the managed backend manually:
+    
+    ```bash
+    executor up
+    ```
+    
+    Start the web UI:
+    
+    ```bash
+    executor web
+    ```
+    
+    Both services start automatically during installation.
+  </Step>
+
+  <Step title="Stop Services">
+    Stop all background services:
+    
+    ```bash
+    executor down
+    ```
+  </Step>
+
+  <Step title="Access Backend Directly">
+    Pass arguments to the managed backend:
+    
+    ```bash
+    executor backend --help
+    executor backend --version
+    ```
+  </Step>
+</Steps>
+
+## Default Ports
+
+The managed runtime uses these local ports:
+
+| Service | Port | Description |
+|---------|------|-------------|
+| Backend API | 5410 | Convex backend HTTP endpoint |
+| Backend Site | 5411 | Site proxy for MCP and HTTP routes |
+| Web UI | 5312 | Next.js dashboard |
+
+<Note>
+  Override default ports by setting `EXECUTOR_BACKEND_PORT`, `EXECUTOR_BACKEND_SITE_PORT`, or `EXECUTOR_WEB_PORT` environment variables before running the installer.
+</Note>
+
+## Data Storage
+
+All runtime data is stored in `~/.executor/runtime/convex-data/`:
+
+- `convex_local_backend.sqlite3` - Main database
+- `storage/` - File storage for tasks and artifacts
+
+This directory persists across upgrades. To reset your local instance:
+
+```bash
+executor down
+rm -rf ~/.executor/runtime/convex-data
+executor up
+```
+
+## MCP Endpoint
+
+The self-hosted instance exposes MCP endpoints at:
+
+```
+http://127.0.0.1:5411/v1/mcp/anonymous
+```
+
+Authenticate using the API key from your workspace settings in the web UI.
+
+## Integration with Claude Code
+
+Executor includes built-in Claude Code integration:
+
+```bash
+executor claude
+```
+
+This command:
+1. Generates a temporary MCP configuration
+2. Bootstraps an anonymous workspace session
+3. Launches Claude Code with the `mcp__executor__execute` tool
+
+<CodeGroup>
+```bash Basic Usage
+executor claude
+```
+
+```bash With Prompt
+executor claude -- "fix failing tests"
+```
+
+```bash Keep Bash Tool
+executor claude --allow-bash -- --model sonnet
+```
+</CodeGroup>
+
+<Note>
+  Claude Code CLI must be installed first: `curl -fsSL https://claude.ai/install.sh | bash`
+</Note>
+
+## Upgrade
+
+Update to the latest release:
+
+```bash
+executor upgrade
+```
+
+Install a specific version:
+
+```bash
+executor upgrade --version v0.1.5
+```
+
+## Uninstall
+
+Remove the executor binary and managed runtime:
+
+```bash
+executor uninstall --yes
+```
+
+Manually remove the PATH entry from your shell rc file if needed:
+
+```bash
+# Remove this line from ~/.zshrc, ~/.bashrc, or ~/.profile
+export PATH=$HOME/.executor/bin:$PATH
+```
+
+## Advanced: Custom Installation Paths
+
+Customize installation directories with environment variables:
+
+```bash
+# Custom binary location
+export EXECUTOR_INSTALL_DIR="$HOME/bin"
+
+# Custom runtime location
+export EXECUTOR_RUNTIME_DIR="$HOME/.local/share/executor"
+
+curl -fsSL https://executor.sh/install | bash
+```
+
+## Advanced: Local Development Build
+
+Install from a local source build:
+
+```bash
+# From the executor/ directory
+bun run build:binary
+bash install --binary dist/executor
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Services won't start">
+    Check logs for errors:
+    
+    ```bash
+    cat ~/.executor/runtime/logs/backend.log
+    cat ~/.executor/runtime/logs/web.log
+    ```
+    
+    Verify ports are not in use:
+    
+    ```bash
+    lsof -ti tcp:5410
+    lsof -ti tcp:5312
+    ```
+  </Accordion>
+
+  <Accordion title="Web UI shows connection error">
+    Ensure the backend is running:
+    
+    ```bash
+    curl http://127.0.0.1:5410/version
+    ```
+    
+    If not running:
+    
+    ```bash
+    executor down
+    executor up
+    ```
+  </Accordion>
+
+  <Accordion title="Doctor command fails">
+    Run with verbose output:
+    
+    ```bash
+    executor doctor --verbose
+    ```
+    
+    Skip function checks if only testing runtime:
+    
+    ```bash
+    executor doctor --runtime-only
+    ```
+  </Accordion>
+
+  <Accordion title="Upgrade fails">
+    Manually stop services first:
+    
+    ```bash
+    executor down
+    executor upgrade
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/deployment/configuration">
+    Configure environment variables and runtime options
+  </Card>
+  <Card title="Cloud Deployment" icon="cloud" href="/deployment/cloud">
+    Deploy to hosted Convex for production use
+  </Card>
+</CardGroup>

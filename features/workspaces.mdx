@@ -1,0 +1,411 @@
+---
+title: 'Workspaces & Organizations'
+description: 'Workspace isolation and organization management for multi-tenant execution'
+---
+
+## Overview
+
+Executor uses a hierarchical isolation model with **Organizations** as the billing and membership umbrella, and **Workspaces** as the unit of execution isolation for tasks, tools, and credentials.
+
+## Organizations
+
+Organizations represent a billing entity and membership boundary:
+
+```typescript
+// From schema.ts:90-102
+organizations: defineTable({
+  workosOrgId: v.optional(v.string()),  // External WorkOS org ID
+  slug: v.string(),                      // URL-friendly identifier
+  name: v.string(),
+  status: organizationStatusValidator,   // "active" | "deleted"
+  createdByAccountId: v.optional(v.id("accounts")),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_workos_org_id", ["workosOrgId"])
+  .index("by_slug", ["slug"])
+  .index("by_status_created", ["status", "createdAt"])
+```
+
+### Organization Properties
+
+<ParamField path="slug" type="string" required>
+  URL-friendly identifier, globally unique. Used in URLs and API paths.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Display name for the organization.
+</ParamField>
+
+<ParamField path="status" type="'active' | 'deleted'" required>
+  Organization lifecycle status. Only `"active"` organizations can be used.
+</ParamField>
+
+<ParamField path="workosOrgId" type="string">
+  External WorkOS organization ID for SSO and directory sync integration.
+</ParamField>
+
+<ParamField path="createdByAccountId" type="Id<'accounts'>">
+  Account that created the organization.
+</ParamField>
+
+## Workspaces
+
+Workspaces are the primary unit of isolation. Each workspace belongs to exactly one organization:
+
+```typescript
+// From schema.ts:69-82
+workspaces: defineTable({
+  organizationId: v.id("organizations"),
+  slug: v.string(),                      // Unique within organization
+  name: v.string(),
+  iconStorageId: v.optional(v.id("_storage")),
+  createdByAccountId: v.optional(v.id("accounts")),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_organization", ["organizationId"])
+  .index("by_organization_created", ["organizationId", "createdAt"])
+  .index("by_organization_slug", ["organizationId", "slug"])
+  .index("by_slug", ["slug"])  // Global slug resolution
+```
+
+### Workspace Properties
+
+<ParamField path="slug" type="string" required>
+  URL-friendly identifier. Must be unique within the organization. Can be globally unique for direct resolution.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Display name for the workspace.
+</ParamField>
+
+<ParamField path="organizationId" type="Id<'organizations'>" required>
+  Parent organization this workspace belongs to.
+</ParamField>
+
+<ParamField path="iconStorageId" type="Id<'_storage'>">
+  Optional custom icon stored in Convex storage.
+</ParamField>
+
+<ParamField path="createdByAccountId" type="Id<'accounts'>">
+  Account that created the workspace.
+</ParamField>
+
+## Isolation Boundaries
+
+Workspaces provide isolation for:
+
+<Tabs>
+  <Tab title="Tasks">
+    Every task belongs to a workspace:
+    
+    ```typescript
+    tasks: defineTable({
+      taskId: v.string(),
+      workspaceId: v.id("workspaces"),  // Workspace isolation
+      accountId: v.optional(v.id("accounts")),
+      // ...
+    })
+    ```
+    
+    Tasks cannot access resources from other workspaces.
+  </Tab>
+  
+  <Tab title="Tool Sources">
+    Tool sources can be scoped to workspace or organization:
+    
+    ```typescript
+    toolSources: defineTable({
+      sourceId: v.string(),
+      scopeType: toolSourceScopeTypeValidator,  // "workspace" | "organization"
+      organizationId: v.id("organizations"),
+      workspaceId: v.optional(v.id("workspaces")),
+      // ...
+    })
+    ```
+    
+    - **Workspace-scoped**: Only visible in that workspace
+    - **Organization-scoped**: Shared across all workspaces in the org
+  </Tab>
+  
+  <Tab title="Credentials">
+    Credentials support three scope levels:
+    
+    ```typescript
+    sourceCredentials: defineTable({
+      credentialId: v.string(),
+      scopeType: credentialScopeTypeValidator,  // "account" | "workspace" | "organization"
+      accountId: v.optional(v.id("accounts")),
+      workspaceId: v.optional(v.id("workspaces")),
+      organizationId: v.id("organizations"),
+      // ...
+    })
+    ```
+    
+    - **Account**: Personal credentials, only for that user
+    - **Workspace**: Shared within the workspace
+    - **Organization**: Shared across all workspaces in the org
+  </Tab>
+  
+  <Tab title="Approvals">
+    Approvals are workspace-scoped:
+    
+    ```typescript
+    approvals: defineTable({
+      approvalId: v.string(),
+      workspaceId: v.id("workspaces"),  // Workspace isolation
+      taskId: v.string(),
+      // ...
+    })
+    ```
+    
+    Only workspace admins can resolve approvals.
+  </Tab>
+  
+  <Tab title="Storage">
+    Storage instances support four scope levels:
+    
+    ```typescript
+    storageInstances: defineTable({
+      instanceId: v.string(),
+      scopeType: storageScopeTypeValidator,  // "scratch" | "account" | "workspace" | "organization"
+      organizationId: v.id("organizations"),
+      workspaceId: v.optional(v.id("workspaces")),
+      accountId: v.optional(v.id("accounts")),
+      // ...
+    })
+    ```
+    
+    - **Scratch**: Ephemeral, task-specific
+    - **Account**: Personal storage
+    - **Workspace**: Shared workspace storage
+    - **Organization**: Shared org-wide storage
+  </Tab>
+</Tabs>
+
+## Organization Membership
+
+Members are linked to organizations with role-based access:
+
+```typescript
+// From schema.ts:111-125
+organizationMembers: defineTable({
+  organizationId: v.id("organizations"),
+  accountId: v.id("accounts"),
+  role: orgRoleValidator,               // "owner" | "admin" | "member" | "billing_admin"
+  status: orgMemberStatusValidator,     // "active" | "pending" | "removed"
+  billable: v.boolean(),                // Counts towards seat billing
+  invitedByAccountId: v.optional(v.id("accounts")),
+  joinedAt: v.optional(v.number()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_org", ["organizationId"])
+  .index("by_org_account", ["organizationId", "accountId"])
+  .index("by_org_billable_status", ["organizationId", "billable", "status"])
+```
+
+### Organization Roles
+
+<ParamField path="owner" type="role">
+  Full administrative access, can delete organization, manage billing.
+</ParamField>
+
+<ParamField path="admin" type="role">
+  Administrative access, can manage members, workspaces, and settings.
+</ParamField>
+
+<ParamField path="member" type="role">
+  Standard access, can execute tasks and view workspace resources.
+</ParamField>
+
+<ParamField path="billing_admin" type="role">
+  Can manage billing and subscription settings.
+</ParamField>
+
+### Billable Seats
+
+The `billable` flag controls whether a member counts towards the organization's seat count:
+
+```typescript
+// From schema.ts:116
+billable: v.boolean(),  // Counts towards seat billing
+```
+
+**Access Pattern**: Count billable active members via `by_org_billable_status` index:
+
+```typescript
+.withIndex("by_org_billable_status", (q) => 
+  q.eq("organizationId", orgId)
+   .eq("billable", true)
+   .eq("status", "active")
+)
+```
+
+## Invitations
+
+Organizations can invite users via email:
+
+```typescript
+// From schema.ts:133-148
+invites: defineTable({
+  organizationId: v.id("organizations"),
+  workspaceId: v.optional(v.id("workspaces")),  // Optional workspace assignment
+  email: v.string(),
+  role: orgRoleValidator,
+  status: inviteStatusValidator,  // "pending" | "accepted" | "expired" | "revoked" | "failed"
+  providerInviteId: v.optional(v.string()),  // External WorkOS invite ID
+  invitedByAccountId: v.id("accounts"),
+  expiresAt: v.number(),
+  acceptedAt: v.optional(v.number()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+```
+
+<Info>
+Invites can optionally pre-assign users to a specific workspace. If `workspaceId` is set, the user joins both the organization and the designated workspace.
+</Info>
+
+## Access Patterns
+
+Common workspace and organization queries:
+
+### Resolve Workspace by Slug
+
+```typescript
+// Global slug lookup
+await ctx.db
+  .query("workspaces")
+  .withIndex("by_slug", (q) => q.eq("slug", "my-workspace"))
+  .unique();
+
+// Organization-scoped slug lookup
+await ctx.db
+  .query("workspaces")
+  .withIndex("by_organization_slug", (q) => 
+    q.eq("organizationId", orgId).eq("slug", "my-workspace")
+  )
+  .unique();
+```
+
+### List Workspaces in Organization
+
+```typescript
+// Ordered by creation time (newest first)
+await ctx.db
+  .query("workspaces")
+  .withIndex("by_organization_created", (q) => 
+    q.eq("organizationId", orgId)
+  )
+  .order("desc")
+  .collect();
+```
+
+### Check Organization Membership
+
+```typescript
+// From policies.ts:241-256
+const membership = await ctx.db
+  .query("organizationMembers")
+  .withIndex("by_org_account", (q) => 
+    q.eq("organizationId", orgId).eq("accountId", accountId)
+  )
+  .unique();
+
+if (!membership || membership.status !== "active") {
+  throw new Error("Account is not an active member");
+}
+```
+
+## Dashboard Workflows
+
+### Organization Management
+
+1. **Create organization** with name and slug
+2. **Invite members** via email with role assignment
+3. **Manage billing** through Stripe integration
+4. **View usage metrics** across all workspaces
+
+### Workspace Management
+
+1. **Create workspace** within organization
+2. **Configure tool sources** (workspace or org-scoped)
+3. **Manage credentials** (account, workspace, or org-scoped)
+4. **Set access policies** for tool usage
+5. **Monitor tasks and approvals**
+
+## Multi-Tenancy
+
+Executor's workspace model supports several tenancy patterns:
+
+### Pattern 1: Single Organization, Multiple Workspaces
+
+```
+Organization: Acme Corp
+├── Workspace: Production
+│   ├── Tool Sources (production APIs)
+│   ├── Credentials (production keys)
+│   └── Access Policies (require approval)
+├── Workspace: Staging
+│   ├── Tool Sources (staging APIs)
+│   └── Access Policies (auto-approve)
+└── Workspace: Development
+    └── Access Policies (allow all)
+```
+
+Use for: Environment separation (dev/staging/prod)
+
+### Pattern 2: Multiple Organizations
+
+```
+Organization: Customer A
+└── Workspace: Customer A Workspace
+
+Organization: Customer B
+└── Workspace: Customer B Workspace
+```
+
+Use for: Complete customer isolation in SaaS deployments
+
+### Pattern 3: Organization-Scoped Resources
+
+```
+Organization: Acme Corp
+├── Tool Source: Shared GitHub (org-scoped)
+├── Credential: Shared API Key (org-scoped)
+├── Workspace: Team A
+│   └── Inherits org-scoped resources
+└── Workspace: Team B
+    └── Inherits org-scoped resources
+```
+
+Use for: Sharing common tools across teams
+
+## Best Practices
+
+### Workspace Design
+
+- Create separate workspaces for different environments (dev/staging/prod)
+- Use organization-scoped resources for shared tools and credentials
+- Name workspaces clearly to reflect their purpose
+
+### Organization Structure
+
+- One organization per company/customer in SaaS deployments
+- Use workspace-scoped credentials for sensitive environment-specific keys
+- Assign appropriate roles to members based on responsibilities
+
+### Access Control
+
+- Set restrictive policies in production workspaces
+- Use approval workflows for destructive operations
+- Grant admin role sparingly, use member role for most users
+
+## Related Features
+
+- [Tasks](/features/tasks) - Task execution within workspaces
+- [Tools](/features/tools) - Workspace and organization-scoped tool sources
+- [Credentials](/features/credentials) - Multi-scope credential management
+- [Policies](/features/policies) - Workspace access policies

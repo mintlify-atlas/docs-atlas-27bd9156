@@ -1,0 +1,287 @@
+---
+title: 'Tasks'
+description: 'Execute code with task lifecycle management, statuses, and event tracking'
+---
+
+## Overview
+
+Tasks are the fundamental execution unit in Executor. Each task represents a single code execution within a workspace, tracked from creation through completion with full lifecycle management.
+
+## Task Lifecycle
+
+Every task progresses through a series of statuses:
+
+<Steps>
+  <Step title="Queued">
+    Task is created and waiting for execution. The task enters a queue and will be picked up by the runtime scheduler.
+    
+    **Source**: `packages/database/convex/database/tasks.ts:80-92`
+  </Step>
+  
+  <Step title="Running">
+    Task is actively executing in a runtime environment. Code is being executed and tool calls may be made.
+    
+    **Source**: `packages/database/convex/database/tasks.ts:146-163`
+  </Step>
+  
+  <Step title="Terminal States">
+    Task reaches one of four terminal states:
+    
+    - **Completed**: Execution finished successfully
+    - **Failed**: Execution encountered an error
+    - **Timed Out**: Execution exceeded the timeout limit
+    - **Denied**: Execution was blocked by approval policy
+    
+    **Source**: `packages/core/src/types.ts:38-39`
+  </Step>
+</Steps>
+
+## Creating Tasks
+
+Tasks are created via the `createTask` workspace action:
+
+```typescript
+// From executor.ts
+export const createTask = workspaceAction({
+  args: {
+    code: v.string(),
+    timeoutMs: v.optional(v.number()),
+    runtimeId: v.optional(v.string()),
+    metadata: v.optional(jsonObjectValidator),
+    accountId: v.optional(vv.id("accounts")),
+    waitForResult: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    return await createTaskHandler(ctx, internal, args);
+  },
+});
+```
+
+### Task Properties
+
+<ParamField path="taskId" type="string" required>
+  Unique domain identifier (e.g., `task_<uuid>`). This stable ID is used across systems and in logs.
+</ParamField>
+
+<ParamField path="code" type="string" required>
+  The code to execute in the runtime environment.
+</ParamField>
+
+<ParamField path="runtimeId" type="string" required>
+  Runtime environment identifier (e.g., `cloudflare-worker`, `node`).
+</ParamField>
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  The workspace this task belongs to.
+</ParamField>
+
+<ParamField path="accountId" type="Id<'accounts'>">
+  Optional account that initiated the task.
+</ParamField>
+
+<ParamField path="clientId" type="string">
+  Client label such as `"web"`, `"mcp"`, etc.
+</ParamField>
+
+<ParamField path="timeoutMs" type="number" default="120000">
+  Execution timeout in milliseconds. Clamped between 1ms and `MAX_TASK_TIMEOUT_MS`.
+  
+  **Source**: `packages/database/convex/database/tasks.ts:46-56`
+</ParamField>
+
+<ParamField path="metadata" type="Record<string, unknown>" default="{}">
+  Arbitrary metadata attached to the task. Used for storage tracking, custom flags, etc.
+</ParamField>
+
+## Task Statuses
+
+The task status determines its current execution state:
+
+<Tabs>
+  <Tab title="Queued">
+    ```typescript
+    // Task is waiting for execution
+    status: "queued"
+    ```
+    
+    The task has been created and is in the execution queue. The scheduler will pick it up when capacity is available.
+  </Tab>
+  
+  <Tab title="Running">
+    ```typescript
+    // Task is actively executing
+    status: "running"
+    startedAt: 1709234567890
+    ```
+    
+    The task is executing in a runtime. `startedAt` timestamp is set when execution begins.
+  </Tab>
+  
+  <Tab title="Completed">
+    ```typescript
+    // Task finished successfully
+    status: "completed"
+    exitCode: 0
+    completedAt: 1709234570123
+    ```
+    
+    The task ran to completion without errors.
+  </Tab>
+  
+  <Tab title="Failed">
+    ```typescript
+    // Task encountered an error
+    status: "failed"
+    error: "ReferenceError: undefined variable"
+    exitCode: 1
+    completedAt: 1709234569000
+    ```
+    
+    The task execution threw an error or failed validation.
+  </Tab>
+  
+  <Tab title="Timed Out">
+    ```typescript
+    // Task exceeded timeout
+    status: "timed_out"
+    error: "Task exceeded 120000ms timeout"
+    completedAt: 1709234690123
+    ```
+    
+    The task ran longer than the configured `timeoutMs`.
+  </Tab>
+  
+  <Tab title="Denied">
+    ```typescript
+    // Task blocked by policy
+    status: "denied"
+    error: "Tool call denied by approval policy"
+    completedAt: 1709234568500
+    ```
+    
+    The task attempted a tool call that was denied by an access policy.
+  </Tab>
+</Tabs>
+
+## Task Events
+
+All task activity is logged as events in an append-only log:
+
+```typescript
+// Schema from schema.ts:278-287
+taskEvents: defineTable({
+  sequence: v.number(),        // Monotonic sequence per task
+  taskId: v.string(),          // References tasks.taskId
+  eventName: v.string(),       // Event type identifier
+  type: v.string(),            // Event category
+  payload: jsonObjectValidator, // Event-specific data
+  createdAt: v.number(),
+})
+```
+
+Events enable ordered replay of task execution history.
+
+**Access Pattern**: Index by `(taskId, sequence)` for efficient chronological retrieval.
+
+## Storage Integration
+
+Tasks can interact with storage instances (filesystem, KV, SQL). Storage access is tracked in task metadata:
+
+```typescript
+// From tasks.ts:239-297
+export const trackTaskStorageAccess = internalMutation({
+  args: {
+    taskId: v.string(),
+    instanceId: v.string(),
+    scopeType: v.optional(storageScopeTypeValidator),
+    accessType: storageAccessTypeValidator,
+  },
+  // Tracks: accessedInstanceIds, openedInstanceIds, providedInstanceIds
+});
+```
+
+<Info>
+Storage tracking enables workspace administrators to see which tasks accessed which storage instances, supporting audit and cost allocation workflows.
+</Info>
+
+## Queue Management
+
+The scheduler polls for queued tasks:
+
+```typescript
+// From tasks.ts:122-133
+export const listQueuedTaskIds = internalQuery({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const docs = await ctx.db
+      .query("tasks")
+      .withIndex("by_status_created", (q) => q.eq("status", "queued"))
+      .order("asc")
+      .take(args.limit ?? 20);
+
+    return docs.map((doc) => doc.taskId);
+  },
+});
+```
+
+**Scheduling**: Tasks are picked oldest-first (FIFO) from the `queued` status index.
+
+## Task Completion
+
+When execution finishes, tasks transition to a terminal state:
+
+```typescript
+// From tasks.ts:166-195
+export const markTaskFinished = internalMutation({
+  args: {
+    taskId: v.string(),
+    status: completedTaskStatusValidator, // completed | failed | timed_out | denied
+    exitCode: v.optional(v.number()),
+    error: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    // Only transitions if not already in terminal state
+    if (isTerminalTaskStatus(doc.status)) {
+      return mapTask(doc);
+    }
+    
+    await ctx.db.patch(doc._id, {
+      status: args.status,
+      exitCode: args.exitCode,
+      error: args.error,
+      completedAt: now,
+      updatedAt: now,
+    });
+  },
+});
+```
+
+<Warning>
+Once a task reaches a terminal state, its status cannot be changed. This ensures execution history is immutable.
+</Warning>
+
+## Best Practices
+
+### Timeout Configuration
+
+- Default timeout is 120 seconds (2 minutes)
+- Set shorter timeouts for quick operations to free up runtime capacity
+- Set longer timeouts for complex workflows, but be aware of resource usage
+
+### Metadata Usage
+
+- Use `metadata` to track custom workflow state
+- Store references to external systems (e.g., ticket IDs, user sessions)
+- Avoid storing large payloads; use storage instances instead
+
+### Client Identification
+
+- Always set `clientId` to identify the source of execution
+- Use consistent labels: `"web"`, `"mcp"`, `"api"`, `"cli"`
+- Enables filtering and analytics by client type
+
+## Related Features
+
+- [Approvals](/features/approvals) - Approval workflows for sensitive operations
+- [Workspaces](/features/workspaces) - Workspace isolation and organization
+- [Tools](/features/tools) - Tool sources and discovery

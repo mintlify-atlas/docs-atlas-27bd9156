@@ -1,0 +1,305 @@
+---
+title: MCP Protocol
+description: Execute code and access tools through the Model Context Protocol
+---
+
+Executor implements the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) to enable AI models and clients to execute code and access tools in a sandboxed environment.
+
+## Endpoints
+
+Executor provides two MCP endpoints:
+
+### Authenticated MCP Endpoint
+
+```
+POST /v1/mcp
+GET /v1/mcp
+DELETE /v1/mcp
+```
+
+Requires OAuth authentication via WorkOS. The endpoint responds with OAuth discovery metadata:
+
+```json
+{
+  "resource": "https://your-deployment.convex.site/v1/mcp?workspaceId=...",
+  "authorization_servers": ["https://your-authkit-domain.authkit.app"],
+  "bearer_methods_supported": ["header"]
+}
+```
+
+**Configuration:**
+
+```bash
+# Required for cloud deployments
+EXECUTOR_DEPLOYMENT_MODE=cloud
+MCP_AUTHORIZATION_SERVER=https://your-authkit-domain.authkit.app
+
+# WorkOS credentials
+WORKOS_CLIENT_ID=client_...
+WORKOS_API_KEY=sk_...
+```
+
+### Anonymous MCP Endpoint
+
+```
+POST /v1/mcp/anonymous
+GET /v1/mcp/anonymous
+DELETE /v1/mcp/anonymous
+```
+
+Requires API key authentication. Use this endpoint for serverless integrations or when OAuth is not available.
+
+**Authentication:**
+
+```bash
+# Request header
+Authorization: Bearer your-api-key
+# or
+x-api-key: your-api-key
+```
+
+**Configuration:**
+
+```bash
+# Generate ES256 key pair
+openssl ecparam -name prime256v1 -genkey -noout -out private.pem
+openssl ec -in private.pem -pubout -out public.pem
+
+# Set in environment
+ANONYMOUS_AUTH_PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+ANONYMOUS_AUTH_PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+
+# API key signing
+MCP_API_KEY_SECRET=change-me
+MCP_API_KEY_TTL_SECONDS=604800
+```
+
+## Execute Tool
+
+The MCP server exposes a single `execute` tool that runs TypeScript code in a sandboxed runtime.
+
+### Input Parameters
+
+<CodeGroup>
+```typescript Authenticated Context
+{
+  code: string;              // TypeScript code to execute
+  timeoutMs?: number;        // Max 600000 (10 min)
+  runtimeId?: string;        // Cloudflare worker runtime
+  metadata?: Record<string, unknown>;
+}
+```
+
+```typescript Anonymous Context
+{
+  code: string;
+  timeoutMs?: number;
+  runtimeId?: string;
+  metadata?: Record<string, unknown>;
+  sessionId?: string;        // Session tracking
+  waitForResult?: boolean;   // Default true
+  resultTimeoutMs?: number;  // Max 900000 (15 min)
+}
+```
+</CodeGroup>
+
+### Response Format
+
+```typescript
+{
+  content: [{ type: "text", text: string }],
+  structuredContent?: {
+    taskId: string;
+    status: "completed" | "failed" | "timeout" | "canceled";
+    runtimeId?: string;
+    exitCode?: number;
+    error?: string;
+    result?: unknown;
+    workspaceId: string;
+    accountId: string;
+    sessionId?: string;
+  },
+  isError?: boolean;
+}
+```
+
+### Example Usage
+
+<Tabs>
+<Tab title="Python Client">
+```python
+import asyncio
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+async def main():
+    server_params = StdioServerParameters(
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-everything"]
+    )
+    
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            # Execute code
+            result = await session.call_tool(
+                "execute",
+                {
+                    "code": "return 2 + 2;",
+                    "timeoutMs": 30000
+                }
+            )
+            
+            print(result.content[0].text)
+
+asyncio.run(main())
+```
+</Tab>
+
+<Tab title="TypeScript Client">
+```typescript
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const transport = new StdioClientTransport({
+  command: "npx",
+  args: ["-y", "@modelcontextprotocol/server-everything"]
+});
+
+const client = new Client({
+  name: "executor-client",
+  version: "1.0.0"
+}, {
+  capabilities: {}
+});
+
+await client.connect(transport);
+
+const result = await client.callTool({
+  name: "execute",
+  arguments: {
+    code: "return 2 + 2;",
+    timeoutMs: 30000
+  }
+});
+
+console.log(result.content[0].text);
+```
+</Tab>
+
+<Tab title="cURL">
+```bash
+curl -X POST https://your-deployment.convex.site/v1/mcp/anonymous?workspaceId=xyz \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "execute",
+      "arguments": {
+        "code": "return 2 + 2;",
+        "timeoutMs": 30000
+      }
+    },
+    "id": 1
+  }'
+```
+</Tab>
+</Tabs>
+
+## Runtime Capabilities
+
+<Note>
+The sandboxed runtime provides access to external services via a `tools` object. The runtime has no filesystem, process, or import access.
+</Note>
+
+### Tools Object
+
+Code executed through MCP has access to a typed `tools` object:
+
+```typescript
+// Discover available tools
+const catalog = await tools.catalog.namespaces({});
+const discovered = await tools.discover({ 
+  query: "github", 
+  limit: 12,
+  compact: true 
+});
+
+// Call discovered tools
+if (discovered.bestPath) {
+  const result = await tools[discovered.bestPath](/* args */);
+}
+```
+
+### Best Practices
+
+1. **Discovery:** Start with broad inventory via `tools.catalog.namespaces()` and `tools.catalog.tools()`
+2. **Compact hints:** Use `compact: true` by default, request schemas with `includeSchemas: true` only when needed
+3. **Batch operations:** For migrations/ETL tasks, run in small batches and return compact summaries
+4. **GraphQL:** Prefer `source.query.*` / `source.mutation.*` helper paths when available
+
+## OAuth Discovery
+
+The authenticated MCP endpoint provides OAuth 2.0 discovery metadata:
+
+### Protected Resource Metadata
+
+```
+GET /.well-known/oauth-protected-resource?resource=https://...
+```
+
+```json
+{
+  "resource": "https://your-deployment.convex.site/v1/mcp?workspaceId=xyz",
+  "authorization_servers": ["https://your-authkit-domain.authkit.app"],
+  "bearer_methods_supported": ["header"]
+}
+```
+
+### Authorization Server Metadata
+
+```
+GET /.well-known/oauth-authorization-server
+```
+
+Proxies the upstream WorkOS AuthKit metadata.
+
+## Rate Limiting
+
+<Warning>
+Both MCP endpoints enforce rate limits. Anonymous token generation has separate rate limits.
+</Warning>
+
+- **MCP requests:** See rate limit implementation in source
+- **Anonymous tokens:** Rate limited at token generation endpoint
+- **429 responses:** Include `Retry-After` header
+
+## Session Management
+
+The MCP server supports session-based context for anonymous users:
+
+```typescript
+// First request creates session
+const result1 = await execute({
+  code: "return 1;",
+  sessionId: "my-session"
+});
+
+// Subsequent requests reuse context
+const result2 = await execute({
+  code: "return 2;",
+  sessionId: "my-session"
+});
+```
+
+Sessions are prefixed with `mcp_` and tied to workspace/account context.
+
+## Source Files
+
+- `executor/packages/core/src/mcp-server.ts` - MCP server implementation
+- `executor/packages/database/convex/http/mcp_handler.ts` - HTTP handlers
+- `executor/packages/database/convex/http/mcp_auth.ts` - Authentication logic
+- `executor/packages/database/convex/http.ts` - Route registration

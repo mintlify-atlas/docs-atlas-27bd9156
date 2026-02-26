@@ -1,0 +1,484 @@
+---
+title: Configuration
+description: Complete environment variable reference and configuration options
+---
+
+Executor configuration is managed through environment variables. This reference documents all available options for both self-hosted and cloud deployments.
+
+## Core Configuration
+
+### Convex Connection
+
+Required for all deployments:
+
+```bash
+# Deployment identifier
+CONVEX_DEPLOYMENT=dev:your-deployment-slug
+
+# Backend API endpoint
+CONVEX_URL=https://your-deployment.convex.cloud
+
+# Site proxy endpoint (for MCP and HTTP routes)
+CONVEX_SITE_URL=https://your-deployment.convex.site
+```
+
+<Note>
+  For self-hosted binary installations, these are auto-configured to local endpoints. For cloud deployments, use the URLs from your Convex dashboard.
+</Note>
+
+### Deployment Mode
+
+Controls security defaults and storage behavior:
+
+<CodeGroup>
+```bash Self-Hosted (Default)
+# Allow local storage primitives
+# Default when unset
+EXECUTOR_DEPLOYMENT_MODE=self-hosted
+```
+
+```bash Cloud
+# Enforce managed credentials and cloud-safe defaults
+# Required for hosted Convex deployments
+EXECUTOR_DEPLOYMENT_MODE=cloud
+```
+</CodeGroup>
+
+## Runtime Execution
+
+### VM Mode
+
+Control code execution environment:
+
+```bash
+# Enable local Bun VM execution (self-hosted only)
+DANGEROUSLY_ALLOW_LOCAL_VM=1
+```
+
+<Warning>
+  **Production deployments should leave this unset** to default to Cloudflare Worker sandbox execution. Only enable for local development or trusted self-hosted environments.
+</Warning>
+
+### OpenAPI Generator
+
+Optional external endpoint for heavy OpenAPI parsing:
+
+```bash
+# External generator URL
+EXECUTOR_GENERATE_URL=http://localhost:4312
+
+# Expected API format:
+# GET /api/generate?specUrl=...&sourceName=...&includeDts=0|1
+```
+
+## Storage Backend
+
+### Storage Provider
+
+Configure agent filesystem storage:
+
+<CodeGroup>
+```bash Local Storage (Self-Hosted)
+# Default for self-hosted installations
+AGENT_STORAGE_PROVIDER=agentfs-local
+
+# Storage root directory
+AGENT_STORAGE_ROOT=/tmp/executor-agentfs
+
+# Disable metadata writes for read-only access
+AGENT_STORAGE_TOUCH_ON_READ=false
+```
+
+```bash Cloudflare Storage (Cloud)
+# Required for hosted Convex deployments
+AGENT_STORAGE_PROVIDER=agentfs-cloudflare
+
+# Cloudflare Durable Objects proxy
+CLOUDFLARE_SANDBOX_RUN_URL=https://your-worker.workers.dev
+CLOUDFLARE_SANDBOX_AUTH_TOKEN=your-auth-token
+```
+</CodeGroup>
+
+<Warning>
+  `agentfs-local` is **only supported for self-hosted/single-host deployments**. Hosted Convex deployments must use `agentfs-cloudflare` because local filesystem state is not shared across workers.
+</Warning>
+
+## Authentication
+
+### WorkOS (Organization Auth)
+
+Enable multi-organization authentication:
+
+```bash
+# WorkOS application credentials
+WORKOS_CLIENT_ID=client_...
+WORKOS_API_KEY=sk_test_...
+
+# Session cookie encryption (32+ character random string)
+WORKOS_COOKIE_PASSWORD=<openssl rand -base64 32>
+
+# Webhook verification
+WORKOS_WEBHOOK_SECRET=...
+```
+
+<Note>
+  WorkOS is optional. Omit these variables to run in anonymous mode.
+</Note>
+
+### Anonymous JWT Auth
+
+Enable anonymous bearer token authentication via Convex Auth:
+
+```bash
+# ES256 key pair (PKCS8 private + SPKI public)
+ANONYMOUS_AUTH_PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+ANONYMOUS_AUTH_PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+
+# Optional: token TTL (default: 604800 = 7 days)
+ANONYMOUS_AUTH_TOKEN_TTL_SECONDS=604800
+```
+
+<Steps>
+  <Step title="Generate Key Pair">
+    ```bash
+    openssl ecparam -name prime256v1 -genkey -noout -out private.pem
+    openssl ec -in private.pem -pubout -out public.pem
+    ```
+  </Step>
+
+  <Step title="Convert to Environment Format">
+    ```bash
+    export ANONYMOUS_AUTH_PRIVATE_KEY_PEM=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' private.pem)
+    export ANONYMOUS_AUTH_PUBLIC_KEY_PEM=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' public.pem)
+    ```
+  </Step>
+</Steps>
+
+### MCP API Keys
+
+Configure API key signing for MCP anonymous endpoint:
+
+```bash
+# Required to issue anonymous MCP API keys
+MCP_API_KEY_SECRET=change-me
+
+# API key TTL (default: 604800 = 7 days)
+MCP_API_KEY_TTL_SECONDS=604800
+```
+
+### MCP OAuth
+
+Enable OAuth for the `/mcp` endpoint:
+
+```bash
+# Authorization server URL
+MCP_AUTHORIZATION_SERVER=https://your-authkit-domain.authkit.app
+```
+
+### Credential Management
+
+Force managed credential storage:
+
+```bash
+# Override deployment-mode defaults
+EXECUTOR_ENFORCE_MANAGED_CREDENTIALS=1
+```
+
+## Billing
+
+### Stripe Integration
+
+Enable checkout and billing portal:
+
+```bash
+# Stripe API credentials
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_PRICE_ID=price_...
+
+# Redirect URLs
+BILLING_SUCCESS_URL=http://localhost:4312/organization?tab=billing&success=true
+BILLING_CANCEL_URL=http://localhost:4312/organization?tab=billing&canceled=true
+BILLING_RETURN_URL=http://localhost:4312/organization?tab=billing
+```
+
+<Note>
+  All Stripe variables are optional. Omit them to disable billing features.
+</Note>
+
+## Port Configuration
+
+### Backend Ports
+
+Override default managed runtime ports:
+
+```bash
+# Backend API port (default: 5410)
+EXECUTOR_BACKEND_PORT=5410
+
+# Backend site proxy port (default: 5411)
+EXECUTOR_BACKEND_SITE_PORT=5411
+```
+
+### Web UI Port
+
+Configure web interface port:
+
+```bash
+# Web UI port (default: 5312)
+EXECUTOR_WEB_PORT=5312
+
+# Web UI interface (default: 127.0.0.1)
+EXECUTOR_WEB_INTERFACE=127.0.0.1
+```
+
+### Assistant Port
+
+Configure assistant server port:
+
+```bash
+# Assistant server port (default: 3002)
+ASSISTANT_PORT=3002
+```
+
+## Installation Paths
+
+### Runtime Directories
+
+Customize installation locations:
+
+```bash
+# Binary install directory (default: ~/.executor/bin)
+EXECUTOR_INSTALL_DIR=$HOME/.executor/bin
+
+# Runtime root directory (default: ~/.executor/runtime)
+EXECUTOR_RUNTIME_DIR=$HOME/.executor/runtime
+
+# Web bundle directory (default: ~/.executor/runtime/web)
+EXECUTOR_WEB_INSTALL_DIR=$HOME/.executor/runtime/web
+
+# Home directory (default: ~/.executor)
+EXECUTOR_HOME_DIR=$HOME/.executor
+```
+
+### Instance Configuration
+
+Managed backend instance settings:
+
+```bash
+# Instance name (default: anonymous-executor)
+EXECUTOR_INSTANCE_NAME=anonymous-executor
+
+# Instance secret (auto-generated if unset)
+EXECUTOR_INSTANCE_SECRET=<random-hex>
+
+# Backend interface (default: 127.0.0.1)
+EXECUTOR_BACKEND_INTERFACE=127.0.0.1
+```
+
+## Web UI Configuration
+
+### Convex URL Overrides
+
+Override Convex URLs for web UI:
+
+```bash
+# Custom Convex URL for web UI
+EXECUTOR_WEB_CONVEX_URL=http://localhost:5410
+
+# Custom Convex site URL for web UI
+EXECUTOR_WEB_CONVEX_SITE_URL=http://localhost:5411
+```
+
+<Note>
+  These override the default managed runtime endpoints. Useful for proxying or custom network configurations.
+</Note>
+
+## Assistant Configuration
+
+Configure assistant server integration:
+
+```bash
+# Executor URL for assistant
+OPENASSISTANT_EXECUTOR_URL=http://localhost:3001
+
+# Assistant callback base URL
+OPENASSISTANT_CALLBACK_BASE_URL=http://localhost:3002
+```
+
+## Discord Bot
+
+Enable Discord bot integration:
+
+```bash
+# Discord bot token (omit to skip bot startup)
+DISCORD_BOT_TOKEN=...
+```
+
+## Tool Source API Keys
+
+Optional API keys for tool source integrations:
+
+```bash
+# PostHog
+POSTHOG_PERSONAL_API_KEY=...
+POSTHOG_PROJECT_ID=...
+
+# GitHub (for assistant)
+OPENASSISTANT_GITHUB_TOKEN=...
+
+# Vercel
+VERCEL_TOKEN=...
+```
+
+## Advanced Options
+
+### Skip Runtime Image
+
+Skip runtime image installation during setup:
+
+```bash
+# Skip runtime image download
+EXECUTOR_SKIP_RUNTIME_IMAGE=1
+```
+
+### Custom Repository
+
+Use a custom GitHub repository for releases:
+
+```bash
+# Custom release repository (default: RhysSullivan/executor)
+EXECUTOR_REPO=your-org/executor-fork
+```
+
+### Install URL Override
+
+Custom installer script URL:
+
+```bash
+# Custom installer URL (default: https://executor.sh/install)
+EXECUTOR_INSTALL_URL=https://your-domain.com/install
+```
+
+## Environment File Structure
+
+A complete `.env` file for cloud deployment:
+
+```bash .env
+# ── Convex (required) ──
+CONVEX_DEPLOYMENT=dev:your-deployment-slug
+CONVEX_URL=https://your-deployment.convex.cloud
+CONVEX_SITE_URL=https://your-deployment.convex.site
+
+# ── Runtime execution mode ──
+EXECUTOR_DEPLOYMENT_MODE=cloud
+# Leave unset for cloud deployments:
+# DANGEROUSLY_ALLOW_LOCAL_VM=1
+
+# ── Agent storage backend ──
+AGENT_STORAGE_PROVIDER=agentfs-cloudflare
+CLOUDFLARE_SANDBOX_RUN_URL=https://your-worker.workers.dev
+CLOUDFLARE_SANDBOX_AUTH_TOKEN=your-auth-token
+
+# ── WorkOS (optional) ──
+WORKOS_CLIENT_ID=client_...
+WORKOS_API_KEY=sk_test_...
+WORKOS_COOKIE_PASSWORD=<32+ char random string>
+WORKOS_WEBHOOK_SECRET=...
+
+# ── Anonymous JWT Auth (optional) ──
+ANONYMOUS_AUTH_PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+ANONYMOUS_AUTH_PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+MCP_API_KEY_SECRET=change-me
+
+# ── Stripe Billing (optional) ──
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_PRICE_ID=price_...
+BILLING_SUCCESS_URL=https://your-domain.com/organization?tab=billing&success=true
+BILLING_CANCEL_URL=https://your-domain.com/organization?tab=billing&canceled=true
+BILLING_RETURN_URL=https://your-domain.com/organization?tab=billing
+
+# ── MCP OAuth (optional) ──
+MCP_AUTHORIZATION_SERVER=https://your-authkit-domain.authkit.app
+```
+
+A complete `.env` file for self-hosted deployment:
+
+```bash .env
+# ── Convex (auto-configured by binary) ──
+# CONVEX_URL=http://127.0.0.1:5410
+# CONVEX_SITE_URL=http://127.0.0.1:5411
+
+# ── Runtime execution mode ──
+EXECUTOR_DEPLOYMENT_MODE=self-hosted
+DANGEROUSLY_ALLOW_LOCAL_VM=1
+
+# ── Agent storage backend ──
+AGENT_STORAGE_PROVIDER=agentfs-local
+AGENT_STORAGE_ROOT=/tmp/executor-agentfs
+
+# ── Anonymous JWT Auth (auto-generated by binary) ──
+# ANONYMOUS_AUTH_PRIVATE_KEY_PEM=...
+# ANONYMOUS_AUTH_PUBLIC_KEY_PEM=...
+# MCP_API_KEY_SECRET=...
+
+# ── Local port overrides (optional) ──
+EXECUTOR_BACKEND_PORT=5410
+EXECUTOR_BACKEND_SITE_PORT=5411
+EXECUTOR_WEB_PORT=5312
+```
+
+## Credential Providers
+
+Executor supports multiple credential storage backends:
+
+### Managed (Convex)
+
+Store credential payloads directly in Convex:
+
+```typescript
+{
+  provider: "managed",
+  secretJson: { apiKey: "sk_..." }
+}
+```
+
+### WorkOS Vault
+
+Store encrypted payloads in WorkOS Vault:
+
+```typescript
+{
+  provider: "workos-vault",
+  secretJson: { objectId: "vault_obj_..." }
+}
+```
+
+<Note>
+  WorkOS Vault requires `WORKOS_API_KEY` for vault reads. Existing objects can be imported by reference.
+</Note>
+
+## Configuration Precedence
+
+Environment variables are loaded with the following precedence:
+
+1. **Process environment** - Variables set in the current shell
+2. **Managed runtime config** - Auto-generated for binary installations
+3. **Convex environment** - Variables set in Convex dashboard
+4. **Default values** - Built-in defaults
+
+<Warning>
+  For cloud deployments, set variables in the Convex dashboard. Local `.env` files are only used during development.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Self-Hosting" icon="server" href="/deployment/self-hosting">
+    Deploy locally with the binary CLI
+  </Card>
+  <Card title="Cloud Deployment" icon="cloud" href="/deployment/cloud">
+    Deploy to hosted Convex for production
+  </Card>
+</CardGroup>

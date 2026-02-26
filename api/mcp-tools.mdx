@@ -1,0 +1,545 @@
+---
+title: "Tool Discovery & Invocation"
+description: "Discover and invoke workspace tools via MCP"
+---
+
+## Overview
+
+Executor provides dynamic tool discovery through the MCP protocol. Tools are workspace-scoped and can include:
+
+- External API sources (REST, GraphQL)
+- MCP servers
+- OpenAPI specifications
+- Custom tool definitions
+
+All tool discovery happens within the execution sandbox via the `tools` object.
+
+## Listing Tools
+
+MCP clients can list available tools using the standard `tools/list` method:
+
+```json MCP Request
+{
+  "jsonrpc": "2.0",
+  "method": "tools/list",
+  "id": 1
+}
+```
+
+### Response Format
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "execute",
+        "description": "Execute TypeScript code in a sandboxed runtime...",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "description": "TypeScript code to execute"
+            },
+            "timeoutMs": {
+              "type": "number",
+              "description": "Maximum execution time in milliseconds"
+            }
+          },
+          "required": ["code"]
+        }
+      }
+    ]
+  }
+}
+```
+
+## Runtime Tool Discovery
+
+Within executing code, use the `tools` object for dynamic discovery:
+
+### Catalog Namespaces
+
+List top-level tool namespaces:
+
+```typescript
+const namespaces = await tools.catalog.namespaces({});
+// Returns: ["github", "slack", "stripe", ...]
+```
+
+### Catalog Tools
+
+Search for tools by namespace or query:
+
+```typescript
+// All tools in a namespace
+const githubTools = await tools.catalog.tools({ 
+  namespace: "github",
+  limit: 20 
+});
+
+// Search across all tools
+const repoTools = await tools.catalog.tools({ 
+  query: "repository",
+  limit: 10
+});
+
+// Response format
+// [
+//   {
+//     "path": "github.repos.get",
+//     "hint": "Get repository details",
+//     "namespace": "github"
+//   },
+//   ...
+// ]
+```
+
+### Discover API
+
+The `discover` method provides intelligent tool search with optional schema details:
+
+```typescript
+// Compact discovery (recommended)
+const discovered = await tools.discover({
+  query: "github repos list",
+  limit: 12,
+  compact: true
+});
+
+if (discovered.bestPath) {
+  // Executor suggests the best match
+  const repos = await tools[discovered.bestPath]({
+    owner: "octocat"
+  });
+}
+
+// Full schema discovery
+const withSchemas = await tools.discover({
+  query: "slack post message",
+  includeSchemas: true,
+  limit: 5
+});
+
+for (const tool of withSchemas.results) {
+  console.log(tool.path);
+  console.log(tool.inputSchema);
+  console.log(tool.outputSchema);
+}
+```
+
+### Discover Response
+
+<ResponseField name="bestPath" type="string">
+  The most relevant tool path match (when available). Use this for single-tool queries.
+</ResponseField>
+
+<ResponseField name="results" type="array">
+  Array of matching tools
+  
+  <Expandable title="result item">
+    <ResponseField name="path" type="string">
+      Dot-notation path to invoke the tool (e.g., `github.repos.get`)
+    </ResponseField>
+    
+    <ResponseField name="hint" type="string">
+      Brief description of the tool's purpose (available when `compact: true`)
+    </ResponseField>
+    
+    <ResponseField name="header" type="string">
+      Additional context about the tool source
+    </ResponseField>
+    
+    <ResponseField name="inputSchema" type="object">
+      JSON Schema for tool input (when `includeSchemas: true`)
+    </ResponseField>
+    
+    <ResponseField name="outputSchema" type="object">
+      JSON Schema for tool output (when `includeSchemas: true`)
+    </ResponseField>
+    
+    <ResponseField name="namespace" type="string">
+      Top-level namespace the tool belongs to
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="total" type="number">
+  Total number of matching tools (may exceed `results.length` if limited)
+</ResponseField>
+
+## Tool Invocation
+
+Tools are invoked using dot-notation paths on the `tools` object:
+
+```typescript
+// Direct invocation
+const repo = await tools.github.repos.get({
+  owner: "octocat",
+  repo: "hello-world"
+});
+
+// Dynamic invocation (use discovered path)
+const toolPath = "github.repos.get";
+const result = await tools[toolPath]({
+  owner: "octocat",
+  repo: "hello-world"
+});
+```
+
+## Tool Types
+
+### REST API Tools
+
+REST endpoints are exposed as typed methods:
+
+```typescript
+// GET request
+const user = await tools.github.users.getByUsername({
+  username: "octocat"
+});
+
+// POST request
+const issue = await tools.github.issues.create({
+  owner: "octocat",
+  repo: "hello-world",
+  title: "Bug report",
+  body: "Description here"
+});
+```
+
+### GraphQL Tools
+
+GraphQL APIs provide both query/mutation helpers and raw GraphQL execution:
+
+```typescript
+// Helper methods (preferred)
+const viewer = await tools.github.query.viewer({
+  // GraphQL query variables
+});
+
+// Raw GraphQL
+const result = await tools.github.graphql({
+  query: `
+    query {
+      viewer {
+        login
+        name
+      }
+    }
+  `
+});
+
+// Returns: { data: {...}, errors: [...] }
+```
+
+### MCP Server Tools
+
+MCP servers configured in the workspace are flattened into the tool namespace:
+
+```typescript
+// Assuming an MCP filesystem server is configured
+const files = await tools.fs.list({
+  path: "/workspace"
+});
+
+const content = await tools.fs.read({
+  path: "/workspace/README.md"
+});
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Minimize Discovery Calls" icon="gauge-high">
+    Avoid repeated small discovery calls. Instead:
+    
+    ```typescript
+    // ❌ Bad: Multiple discovery calls
+    const repos = await tools.discover({ query: "list repos", limit: 1 });
+    const issues = await tools.discover({ query: "list issues", limit: 1 });
+    const prs = await tools.discover({ query: "list pulls", limit: 1 });
+    
+    // ✅ Good: Single broad discovery
+    const discovered = await tools.discover({ 
+      query: "github", 
+      limit: 20,
+      compact: true 
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Use Compact Mode First" icon="compress">
+    Request full schemas only when needed:
+    
+    ```typescript
+    // ✅ Start with compact hints
+    const tools = await tools.discover({ 
+      query: "slack",
+      compact: true,
+      limit: 10
+    });
+    
+    // Then get schema for the specific tool you need
+    const detailed = await tools.discover({
+      query: tools.results[0].path,
+      includeSchemas: true,
+      limit: 1
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Prefer bestPath" icon="star">
+    Use `bestPath` when doing targeted searches:
+    
+    ```typescript
+    const discovered = await tools.discover({ 
+      query: "github get repository",
+      compact: true
+    });
+    
+    if (discovered.bestPath) {
+      // Use the recommended path directly
+      const repo = await tools[discovered.bestPath](params);
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Handle Approvals" icon="shield-check">
+    Tool calls may require approval based on workspace policies:
+    
+    ```typescript
+    try {
+      const result = await tools.stripe.charges.create({
+        amount: 1000,
+        currency: "usd",
+        source: "tok_visa"
+      });
+      return result;
+    } catch (error) {
+      if (error.kind === "pending") {
+        // Approval required - task will pause
+        return `Approval needed: ${error.approvalId}`;
+      }
+      throw error;
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Return Summaries for Large Data" icon="list">
+    For migration/ETL tasks, return compact summaries:
+    
+    ```typescript
+    // ❌ Bad: Return all data
+    const allRepos = await tools.github.repos.listForOrg({ 
+      org: "myorg" 
+    });
+    return allRepos; // May timeout or exceed size limits
+    
+    // ✅ Good: Return summary
+    const repos = await tools.github.repos.listForOrg({ 
+      org: "myorg" 
+    });
+    return {
+      total: repos.length,
+      sample: repos.slice(0, 5).map(r => ({
+        name: r.name,
+        stars: r.stargazers_count
+      })),
+      hasMore: repos.length > 5
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Tool Configuration
+
+Tools are configured at the workspace level through:
+
+1. **Source Connections** - Add external API sources (GitHub, Slack, etc.)
+2. **Credentials** - Manage API keys and OAuth tokens
+3. **Access Policies** - Configure approval requirements per tool
+4. **MCP Servers** - Register custom MCP server endpoints
+
+See [Workspaces](/features/workspaces) for details.
+
+## Tool Inventory Format
+
+The `execute` tool description includes a tool inventory footer:
+
+```
+Tooling tip: avoid repeated tiny discovery calls. Start with a single broad 
+inventory pass via `tools.catalog.namespaces({})` and 
+`tools.catalog.tools({ namespace?, query?, limit: 20 })`, then do at most 
+one focused `tools.discover({ query, limit: 12, compact: true })`.
+
+Execution tip: for migration/ETL-style tasks, discover once, then run in 
+small batches and `return` compact summaries (counts, IDs, and top-N samples) 
+instead of full objects.
+
+GraphQL tip: prefer `source.query.*` / `source.mutation.*` helper paths 
+when available; GraphQL tools return `{ data, errors }`.
+
+## Tool Inventory
+
+### catalog
+- catalog.namespaces({}) → string[] - List available tool namespaces
+- catalog.tools({ namespace?, query?, limit? }) → ToolDescriptor[] - Search tools
+
+### discover
+- discover({ query, limit?, compact?, includeSchemas? }) → DiscoveryResult
+
+### github (requires credentials)
+- github.repos.* - Repository operations
+- github.issues.* - Issue management
+- github.pulls.* - Pull request operations
+- github.query.* - GraphQL query helpers
+- github.mutation.* - GraphQL mutation helpers
+```
+
+## Error Handling
+
+<ResponseField name="Tool Not Found">
+  ```typescript
+  // Throws error if tool path doesn't exist
+  await tools.nonexistent.method();
+  // Error: Tool path 'nonexistent.method' not found
+  ```
+</ResponseField>
+
+<ResponseField name="Invalid Parameters">
+  ```typescript
+  // Throws validation error
+  await tools.github.repos.get({ owner: "octocat" });
+  // Error: Missing required parameter 'repo'
+  ```
+</ResponseField>
+
+<ResponseField name="Approval Required">
+  ```typescript
+  // Returns pending approval info
+  try {
+    await tools.stripe.charges.create({ amount: 1000 });
+  } catch (error) {
+    console.log(error.kind); // "pending"
+    console.log(error.approvalId); // "approval_123"
+  }
+  ```
+</ResponseField>
+
+<ResponseField name="API Errors">
+  ```typescript
+  // External API errors are propagated
+  try {
+    await tools.github.repos.get({ 
+      owner: "nonexistent",
+      repo: "repo"
+    });
+  } catch (error) {
+    console.log(error.status); // 404
+    console.log(error.message); // "Not Found"
+  }
+  ```
+</ResponseField>
+
+## Examples
+
+<CodeGroup>
+```typescript Discovery Pattern
+// 1. List namespaces
+const namespaces = await tools.catalog.namespaces({});
+console.log('Available:', namespaces);
+
+// 2. Explore a namespace
+const githubTools = await tools.catalog.tools({
+  namespace: 'github',
+  limit: 20
+});
+
+// 3. Find specific tool
+const discovered = await tools.discover({
+  query: 'create issue',
+  compact: true
+});
+
+if (discovered.bestPath) {
+  const issue = await tools[discovered.bestPath]({
+    owner: 'myorg',
+    repo: 'myrepo',
+    title: 'Bug found',
+    body: 'Details here'
+  });
+  return issue;
+}
+```
+
+```typescript GraphQL Pattern
+// Use helper methods
+const viewer = await tools.github.query.viewer({});
+console.log('Logged in as:', viewer.data.viewer.login);
+
+// Or raw GraphQL
+const result = await tools.github.graphql({
+  query: `
+    query GetRepo($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) {
+        name
+        stargazerCount
+        issues(first: 5) {
+          nodes {
+            title
+          }
+        }
+      }
+    }
+  `,
+  variables: {
+    owner: 'octocat',
+    name: 'hello-world'
+  }
+});
+
+return result.data.repository;
+```
+
+```typescript Batch Processing
+// Discover once
+const discovered = await tools.discover({
+  query: 'github repos',
+  compact: true
+});
+
+const listReposPath = discovered.results
+  .find(t => t.path.includes('listForOrg'))?.path;
+
+if (!listReposPath) {
+  throw new Error('Repo listing tool not found');
+}
+
+// Fetch in batches
+const repos = await tools[listReposPath]({
+  org: 'myorg',
+  per_page: 100
+});
+
+// Return summary
+return {
+  total: repos.length,
+  languages: [...new Set(repos.map(r => r.language))],
+  topStarred: repos
+    .sort((a, b) => b.stargazers_count - a.stargazers_count)
+    .slice(0, 10)
+    .map(r => ({ name: r.name, stars: r.stargazers_count }))
+};
+```
+</CodeGroup>
+
+## Related
+
+- [execute Tool](/api/mcp-execute)
+- [Tool Sources](/features/tools)
+- [Access Policies](/features/policies)
+- [Credential Management](/features/credentials)

@@ -1,0 +1,324 @@
+---
+title: 'Workspaces API'
+description: 'Convex functions for managing workspaces and organizations'
+---
+
+## Overview
+
+Workspaces are isolated execution environments within an organization. The Workspaces API provides functions to create workspaces, list available workspaces, and manage workspace-level settings.
+
+## Workspace Functions
+
+### create
+
+Creates a new workspace within an organization. Requires authentication.
+
+<ParamField path="name" type="string" required>
+  Display name for the workspace
+</ParamField>
+
+<ParamField path="organizationId" type="Id<'organizations'>">
+  Organization to create the workspace in. If not provided, uses the user's default organization or creates a new personal organization.
+</ParamField>
+
+<ParamField path="iconStorageId" type="Id<'_storage'>">
+  Storage ID for the workspace icon image
+</ParamField>
+
+<ResponseField name="id" type="Id<'workspaces'>">
+  Unique workspace identifier
+</ResponseField>
+
+<ResponseField name="organizationId" type="Id<'organizations'>">
+  Parent organization ID
+</ResponseField>
+
+<ResponseField name="organizationName" type="string">
+  Name of the parent organization
+</ResponseField>
+
+<ResponseField name="organizationSlug" type="string">
+  URL-friendly slug for the organization
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Workspace display name
+</ResponseField>
+
+<ResponseField name="slug" type="string">
+  URL-friendly workspace slug
+</ResponseField>
+
+<ResponseField name="iconUrl" type="string | null">
+  URL to the workspace icon, or null if no icon is set
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp of workspace creation
+</ResponseField>
+
+```javascript
+// Create a workspace in an existing organization
+const workspace = await create({
+  name: 'Production Environment',
+  organizationId: orgId,
+  iconStorageId: uploadedIconId
+});
+
+console.log(`Created workspace: ${workspace.slug}`);
+console.log(`Access at: /${workspace.organizationSlug}/${workspace.slug}`);
+```
+
+### list
+
+Lists workspaces accessible to the current user, optionally filtered by organization.
+
+<ParamField path="organizationId" type="Id<'organizations'>">
+  Filter workspaces to a specific organization
+</ParamField>
+
+Returns an array of workspace objects with the same structure as the `create` response.
+
+```javascript
+// List all accessible workspaces
+const allWorkspaces = await list({});
+
+// List workspaces in a specific organization
+const orgWorkspaces = await list({ organizationId: orgId });
+
+console.log(`You have access to ${allWorkspaces.length} workspaces`);
+```
+
+### generateWorkspaceIconUploadUrl
+
+Generates a temporary upload URL for uploading a workspace icon.
+
+<ResponseField name="uploadUrl" type="string">
+  Temporary URL to upload the icon image to
+</ResponseField>
+
+<ResponseField name="storageId" type="Id<'_storage'>">
+  Storage identifier to use when creating/updating the workspace
+</ResponseField>
+
+```javascript
+// Upload a workspace icon
+const { uploadUrl, storageId } = await generateWorkspaceIconUploadUrl();
+
+// Upload the image
+await fetch(uploadUrl, {
+  method: 'POST',
+  body: iconImageBlob,
+  headers: { 'Content-Type': 'image/png' }
+});
+
+// Create workspace with the icon
+const workspace = await create({
+  name: 'My Workspace',
+  iconStorageId: storageId
+});
+```
+
+## Organization Functions
+
+### create (Organization)
+
+Creates a new organization. Requires authentication.
+
+<ParamField path="name" type="string" required>
+  Display name for the organization
+</ParamField>
+
+<ResponseField name="id" type="Id<'organizations'>">
+  Unique organization identifier
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Organization display name
+</ResponseField>
+
+<ResponseField name="slug" type="string">
+  URL-friendly organization slug
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp of creation
+</ResponseField>
+
+```javascript
+const org = await organizations.create({
+  name: 'Acme Corporation'
+});
+
+console.log(`Organization created: ${org.slug}`);
+```
+
+### listMine
+
+Lists all organizations the current user is a member of.
+
+Returns an array of organization objects.
+
+```javascript
+const myOrgs = await organizations.listMine();
+
+for (const org of myOrgs) {
+  console.log(`${org.name} (${org.slug})`);
+}
+```
+
+### getNavigationState
+
+Retrieves the current user's navigation state, including their default organization and workspace.
+
+<ResponseField name="currentOrganizationId" type="Id<'organizations'>" optional>
+  The user's current/default organization
+</ResponseField>
+
+<ResponseField name="currentWorkspaceId" type="Id<'workspaces'>" optional>
+  The user's current/default workspace
+</ResponseField>
+
+<ResponseField name="organizations" type="array">
+  List of organizations the user belongs to
+</ResponseField>
+
+<ResponseField name="workspaces" type="array">
+  List of workspaces the user has access to
+</ResponseField>
+
+```javascript
+const navState = await organizations.getNavigationState();
+
+if (navState.currentWorkspaceId) {
+  console.log('User has a default workspace set');
+} else {
+  console.log('User needs to select a workspace');
+}
+```
+
+### getOrganizationAccess
+
+Retrieves the current user's access level and role within an organization.
+
+<ParamField path="organizationId" type="Id<'organizations'>" required>
+  Organization to check access for
+</ParamField>
+
+<ResponseField name="role" type="OrganizationRole" optional>
+  User's role: `"owner"`, `"admin"`, `"member"`, or `"billing_admin"`
+</ResponseField>
+
+<ResponseField name="isAdmin" type="boolean">
+  Whether the user has admin privileges (owner or admin role)
+</ResponseField>
+
+<ResponseField name="canManageBilling" type="boolean">
+  Whether the user can manage billing settings
+</ResponseField>
+
+```javascript
+const access = await organizations.getOrganizationAccess({
+  organizationId: orgId
+});
+
+if (access.isAdmin) {
+  console.log('User has admin access');
+  // Show admin controls
+}
+```
+
+### resolveWorkosOrganizationId
+
+Resolves the WorkOS organization ID for a given Executor organization.
+
+<ParamField path="organizationId" type="Id<'organizations'>" required>
+  Executor organization ID
+</ParamField>
+
+<ResponseField name="workosOrganizationId" type="string" optional>
+  The associated WorkOS organization ID, if any
+</ResponseField>
+
+```javascript
+const result = await organizations.resolveWorkosOrganizationId({
+  organizationId: orgId
+});
+
+if (result.workosOrganizationId) {
+  console.log(`WorkOS Org: ${result.workosOrganizationId}`);
+}
+```
+
+## Workspace Structure
+
+Workspaces provide isolation for:
+
+- **Tasks**: Code execution is scoped to a workspace
+- **Tool Sources**: MCP servers and API integrations can be workspace-specific
+- **Approvals**: Approval workflows operate at the workspace level
+- **Storage**: Workspace-scoped storage instances for persistent data
+- **Policies**: Access control policies can be defined per workspace
+
+```javascript
+// Example: Set up a new workspace
+async function setupWorkspace(name, orgId) {
+  // Create workspace
+  const workspace = await create({ name, organizationId: orgId });
+  
+  // Add tool sources
+  await toolSources.upsertToolSource({
+    workspaceId: workspace.id,
+    name: 'GitHub',
+    type: 'mcp',
+    config: { url: 'https://github-mcp.example.com' }
+  });
+  
+  // Configure policies
+  await policies.createPolicy({
+    workspaceId: workspace.id,
+    resourceType: 'all_tools',
+    effect: 'allow',
+    approvalMode: 'required'
+  });
+  
+  return workspace;
+}
+```
+
+## Organization Structure
+
+Organizations are the top-level container and manage:
+
+- **Members**: User membership and roles
+- **Billing**: Subscription and usage tracking  
+- **Workspaces**: Multiple isolated environments
+- **Organization-scoped tool sources**: Shared across all workspaces
+- **Organization-scoped policies**: Apply to all workspaces
+
+```javascript
+// Example: Organization setup
+async function setupOrganization(name) {
+  // Create organization
+  const org = await organizations.create({ name });
+  
+  // Create default workspaces
+  const dev = await create({
+    name: 'Development',
+    organizationId: org.id
+  });
+  
+  const prod = await create({
+    name: 'Production', 
+    organizationId: org.id
+  });
+  
+  return { org, workspaces: { dev, prod } };
+}
+```
+
+## Related Types
+
+- `OrganizationRole`: `"owner"` | `"admin"` | `"member"` | `"billing_admin"`
+- `ToolSourceScopeType`: `"organization"` | `"workspace"`
+- `PolicyScopeType`: `"account"` | `"organization"` | `"workspace"`

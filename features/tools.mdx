@@ -1,0 +1,555 @@
+---
+title: 'Tool Sources'
+description: 'Configure MCP servers, OpenAPI specs, and GraphQL endpoints as tool sources'
+---
+
+## Overview
+
+Executor discovers and invokes tools from three types of sources:
+- **MCP Servers**: Model Context Protocol servers providing structured tools
+- **OpenAPI Specs**: REST APIs described by OpenAPI 3.x specifications
+- **GraphQL Endpoints**: GraphQL APIs with introspection
+
+Each tool source is configured in a workspace or organization and materialized into a searchable tool registry.
+
+## Tool Source Types
+
+<Tabs>
+  <Tab title="MCP">
+    ```typescript
+    // MCP server configuration
+    {
+      type: "mcp",
+      config: {
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem"],
+        env: {
+          HOME: "/home/user"
+        },
+        auth: {
+          type: "none"
+        }
+      }
+    }
+    ```
+    
+    MCP servers are spawned as child processes using `command` and `args`. Tools are discovered via the MCP protocol's `tools/list` method.
+    
+    **Source**: `packages/core/src/tool/source-execution.ts`
+  </Tab>
+  
+  <Tab title="OpenAPI">
+    ```typescript
+    // OpenAPI spec configuration
+    {
+      type: "openapi",
+      config: {
+        specUrl: "https://api.github.com/openapi.json",
+        auth: {
+          type: "bearer",
+          header: "Authorization",
+          scheme: "token"
+        }
+      }
+    }
+    ```
+    
+    OpenAPI sources fetch and parse the spec, then generate tool definitions for each operation. Parameter serialization follows OpenAPI 3.x standards.
+    
+    **Source**: `packages/core/src/tool/source-execution.ts:24-410`
+  </Tab>
+  
+  <Tab title="GraphQL">
+    ```typescript
+    // GraphQL endpoint configuration
+    {
+      type: "graphql",
+      config: {
+        endpoint: "https://api.example.com/graphql",
+        auth: {
+          type: "apiKey",
+          header: "X-API-Key"
+        }
+      }
+    }
+    ```
+    
+    GraphQL sources use introspection to discover available queries and mutations, generating tool definitions with typed arguments.
+    
+    **Source**: `packages/core/src/tool/source-execution.ts:412-480`
+  </Tab>
+</Tabs>
+
+## Tool Source Schema
+
+```typescript
+// From schema.ts:390-411
+toolSources: defineTable({
+  sourceId: v.string(),                     // domain ID: src_<uuid>
+  scopeType: toolSourceScopeTypeValidator,  // "workspace" | "organization"
+  organizationId: v.id("organizations"),
+  workspaceId: v.optional(v.id("workspaces")),
+  name: v.string(),                         // User-friendly name
+  type: toolSourceTypeValidator,            // "mcp" | "openapi" | "graphql"
+  configVersion: v.number(),                // Config schema version
+  config: jsonObjectValidator,              // Type-specific config
+  specHash: v.optional(v.string()),         // Cache invalidation key
+  authFingerprint: v.optional(v.string()),  // Auth config fingerprint
+  enabled: v.boolean(),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+```
+
+### Tool Source Properties
+
+<ParamField path="sourceId" type="string" required>
+  Unique domain identifier (e.g., `src_<uuid>`). Used in credential bindings and tool paths.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  User-friendly name, must be unique within scope (workspace or organization).
+</ParamField>
+
+<ParamField path="type" type="'mcp' | 'openapi' | 'graphql'" required>
+  Tool source type determines how tools are discovered and invoked.
+</ParamField>
+
+<ParamField path="scopeType" type="'workspace' | 'organization'" required>
+  Visibility scope:
+  - **workspace**: Only visible in the owning workspace
+  - **organization**: Visible in all workspaces in the organization
+</ParamField>
+
+<ParamField path="config" type="Record<string, unknown>" required>
+  Type-specific configuration object. Validated and normalized on upsert.
+  
+  **Source**: `packages/database/src/database/tool_source_config.ts`
+</ParamField>
+
+<ParamField path="enabled" type="boolean" default="true">
+  Whether this source is active. Disabled sources are excluded from tool discovery.
+</ParamField>
+
+<ParamField path="specHash" type="string">
+  Hash of the source specification (OpenAPI spec URL, GraphQL schema, MCP command). Used to detect changes and invalidate cached tools.
+</ParamField>
+
+<ParamField path="authFingerprint" type="string">
+  Fingerprint of the auth configuration. When this changes, cached tool registry entries are invalidated.
+</ParamField>
+
+## Creating Tool Sources
+
+```typescript
+// From tool_sources.ts:15-128
+export const upsertToolSource = internalMutation({
+  args: {
+    id: v.optional(v.string()),        // Reuse existing sourceId or generate new
+    workspaceId: vv.id("workspaces"),
+    scopeType: v.optional(toolSourceScopeTypeValidator),
+    name: v.string(),
+    type: toolSourceTypeValidator,
+    config: jsonObjectValidator,
+    enabled: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const sourceId = args.id ?? `src_${crypto.randomUUID()}`;
+    const scopeType = args.scopeType ?? "workspace";
+    
+    // Validate and normalize config
+    const configResult = normalizeToolSourceConfig(args.type, args.config);
+    if (configResult.isErr()) {
+      throw new Error(configResult.error.message);
+    }
+    
+    // Check for name conflicts in scope
+    const conflict = await ctx.db
+      .query("toolSources")
+      .withIndex("by_workspace_name", (q) => 
+        q.eq("workspaceId", args.workspaceId).eq("name", args.name)
+      )
+      .unique();
+    
+    if (conflict && conflict.sourceId !== sourceId) {
+      throw new Error(`Tool source name '${args.name}' already exists`);
+    }
+    
+    // Trigger tool registry rebuild
+    await safeRunAfter(ctx.scheduler, 0, 
+      internal.executorNode.rebuildToolInventoryInternal, 
+      { workspaceId: args.workspaceId }
+    );
+  },
+});
+```
+
+<Info>
+Updating a tool source triggers an asynchronous rebuild of the workspace tool registry to reflect the changes.
+</Info>
+
+## Tool Discovery
+
+Tools are discovered and materialized into the workspace tool registry:
+
+```typescript
+// From schema.ts:472-502
+workspaceToolRegistry: defineTable({
+  workspaceId: v.id("workspaces"),
+  path: v.string(),                    // Full tool path, e.g., "github/create_issue"
+  preferredPath: v.string(),           // Display path
+  namespace: v.string(),               // Source namespace
+  normalizedPath: v.string(),          // Normalized for matching
+  aliases: v.array(v.string()),        // Alternative paths
+  description: v.string(),
+  approval: toolApprovalModeValidator, // "auto" | "required"
+  source: v.optional(v.string()),      // Source name
+  searchText: v.string(),              // Full-text search index
+  displayInput: v.optional(v.string()),
+  displayOutput: v.optional(v.string()),
+  requiredInputKeys: v.optional(v.array(v.string())),
+  previewInputKeys: v.optional(v.array(v.string())),
+  typedRef: v.optional(v.object({
+    kind: v.literal("openapi_operation"),
+    sourceKey: v.string(),
+    operationId: v.string(),
+  })),
+  createdAt: v.number(),
+})
+  .searchIndex("search_text", {
+    searchField: "searchText",
+    filterFields: ["workspaceId"],
+  })
+```
+
+**Tool Registry Features**:
+- Full-text search on tool names and descriptions
+- Namespaced paths prevent collisions
+- Aliases for flexible tool invocation
+- Approval mode per tool
+- Type information for better UX
+
+## Authentication
+
+Tool sources can specify authentication requirements:
+
+```typescript
+// Auth configuration in tool source config
+auth: {
+  type: "bearer" | "apiKey" | "basic" | "none" | "mixed",
+  header?: string,     // e.g., "Authorization", "X-API-Key"
+  scheme?: string,     // e.g., "Bearer", "token"
+  mode?: "account" | "workspace" | "organization"
+}
+```
+
+### Auth Types
+
+<ParamField path="none" type="auth type">
+  No authentication required. Tools are invoked without credentials.
+</ParamField>
+
+<ParamField path="bearer" type="auth type">
+  Bearer token authentication. Credential value is sent in `Authorization: Bearer <token>` header.
+  
+  Example: GitHub personal access tokens
+</ParamField>
+
+<ParamField path="apiKey" type="auth type">
+  API key authentication. Credential value is sent in a custom header.
+  
+  Example: `X-API-Key: <key>`
+</ParamField>
+
+<ParamField path="basic" type="auth type">
+  HTTP Basic authentication. Credential must provide `username` and `password`.
+</ParamField>
+
+<ParamField path="mixed" type="auth type">
+  Tool source has operations with different auth requirements. Credentials are resolved per-operation.
+</ParamField>
+
+### Credential Binding
+
+Credentials are bound to tool sources using the source key pattern:
+
+```typescript
+// Credential sourceKey references a tool source
+sourceKey: `source:${sourceId}`
+
+// Example
+sourceKey: "source:src_abc123"
+```
+
+See [Credentials](/features/credentials) for complete details.
+
+## Tool Invocation
+
+When a task calls a tool, Executor:
+
+1. **Resolves the tool** from the workspace registry
+2. **Checks access policies** to determine if approval is required
+3. **Resolves credentials** based on auth requirements and scope
+4. **Executes the tool** via the appropriate source type handler
+5. **Returns the result** to the task
+
+### OpenAPI Invocation
+
+```typescript
+// From source-execution.ts:317-410
+export async function executeOpenApiRequest(
+  runSpec: OpenApiRequestRunSpec,
+  input: unknown,
+  credentialHeaders?: Record<string, string>,
+): Promise<Result<unknown, OpenApiRequestError>> {
+  // Build request from OpenAPI operation spec
+  const parts = buildOpenApiRequestParts(
+    runSpec.baseUrl,
+    runSpec.pathTemplate,
+    runSpec.parameters,
+    buckets,
+  );
+  
+  // Merge auth headers from source + credential
+  const requestHeaders = {
+    ...runSpec.authHeaders,
+    ...(credentialHeaders ?? {}),
+    ...parts.headerParameters,
+  };
+  
+  // Execute HTTP request
+  const response = await fetch(parts.url, {
+    method: runSpec.method.toUpperCase(),
+    headers: requestHeaders,
+    body: hasBody ? JSON.stringify(parts.bodyInput) : undefined,
+  });
+  
+  // Parse and return response
+}
+```
+
+**Parameter Serialization**: OpenAPI parameter serialization follows the spec's `style` and `explode` settings:
+- Path parameters: URL-encoded
+- Query parameters: Form, space-delimited, pipe-delimited, or deep object style
+- Header parameters: Comma-separated
+- Cookie parameters: Semicolon-separated
+
+**Source**: `packages/core/src/tool/source-execution.ts:88-190`
+
+### GraphQL Invocation
+
+```typescript
+// From source-execution.ts:427-479
+export async function executeGraphqlRequest(
+  endpoint: string,
+  authHeaders: Record<string, string>,
+  query: string,
+  variables: unknown,
+  credentialHeaders?: Record<string, string>,
+): Promise<Result<GraphqlExecutionEnvelope, GraphqlRequestError>> {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...authHeaders,
+      ...(credentialHeaders ?? {}),
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  
+  // Handle GraphQL response envelope with data + errors
+  const decoded = await response.json();
+  return normalizeGraphqlEnvelope(decoded);
+}
+```
+
+### MCP Invocation
+
+```typescript
+// MCP tools are invoked via the client-server protocol
+export async function callMcpToolWithReconnect(
+  call: () => Promise<unknown>,
+  reconnectAndCall: () => Promise<unknown>,
+): Promise<unknown> {
+  try {
+    return await call();
+  } catch (error) {
+    // Reconnect on socket/connection errors
+    if (isMcpReconnectableError(error)) {
+      return await reconnectAndCall();
+    }
+    throw error;
+  }
+}
+```
+
+**Source**: `packages/core/src/tool/source-execution.ts:44-61`
+
+## Tool Registry State
+
+The workspace tool registry maintains materialization state:
+
+```typescript
+// From schema.ts:426-468
+workspaceToolRegistryState: defineTable({
+  workspaceId: v.id("workspaces"),
+  signature: v.optional(v.string()),              // Hash of all source configs
+  lastRefreshCompletedAt: v.optional(v.number()),
+  lastRefreshFailedAt: v.optional(v.number()),
+  lastRefreshError: v.optional(v.string()),
+  typesStorageId: v.optional(v.id("_storage")),  // TypeScript types for tools
+  warnings: v.optional(v.array(v.string())),
+  toolCount: v.optional(v.number()),
+  sourceToolCounts: v.optional(v.array(v.object({
+    sourceName: v.string(),
+    toolCount: v.number(),
+  }))),
+  sourceQuality: v.optional(v.array(v.object({  // Type quality metrics
+    sourceKey: v.string(),
+    toolCount: v.number(),
+    argsQuality: v.number(),
+    returnsQuality: v.number(),
+    overallQuality: v.number(),
+  }))),
+  sourceAuthProfiles: v.optional(v.array(v.object({  // Detected auth patterns
+    sourceKey: v.string(),
+    type: v.union(v.literal("none"), v.literal("bearer"), ...),
+    mode: v.optional(v.union(v.literal("account"), ...)),
+    header: v.optional(v.string()),
+    inferred: v.boolean(),
+  }))),
+  // ...
+})
+```
+
+**Registry Refresh**: When tool sources change, the registry is rebuilt asynchronously. The state tracks:
+- Last successful refresh timestamp
+- Any errors encountered
+- Tool counts per source
+- Type quality metrics
+- Auth profiles for credential configuration
+
+## Listing Tool Sources
+
+```typescript
+// From tool_sources.ts:130-159
+export const listToolSources = internalQuery({
+  args: { workspaceId: vv.id("workspaces") },
+  handler: async (ctx, args) => {
+    const workspace = await ctx.db.get(args.workspaceId);
+    
+    // Fetch workspace-scoped and org-scoped sources
+    const [workspaceDocs, organizationDocs] = await Promise.all([
+      ctx.db
+        .query("toolSources")
+        .withIndex("by_workspace_updated", (q) => 
+          q.eq("workspaceId", args.workspaceId)
+        )
+        .collect(),
+      ctx.db
+        .query("toolSources")
+        .withIndex("by_organization_scope_updated", (q) =>
+          q.eq("organizationId", workspace.organizationId)
+           .eq("scopeType", "organization")
+        )
+        .collect(),
+    ]);
+    
+    // Merge and deduplicate by sourceId
+    const docs = [...workspaceDocs, ...organizationDocs]
+      .filter((doc, index, entries) => 
+        entries.findIndex((candidate) => 
+          candidate.sourceId === doc.sourceId
+        ) === index
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
+    
+    return docs.map(mapSource);
+  },
+});
+```
+
+## Deleting Tool Sources
+
+```typescript
+// From tool_sources.ts:161-200
+export const deleteToolSource = internalMutation({
+  args: { 
+    workspaceId: vv.id("workspaces"), 
+    sourceId: v.string() 
+  },
+  handler: async (ctx, args) => {
+    const doc = await ctx.db
+      .query("toolSources")
+      .withIndex("by_source_id", (q) => q.eq("sourceId", args.sourceId))
+      .unique();
+    
+    // Delete associated credentials
+    const sourceKey = `source:${args.sourceId}`;
+    const bindings = await ctx.db
+      .query("sourceCredentials")
+      .withIndex("by_source", (q) => q.eq("sourceKey", sourceKey))
+      .collect();
+    
+    for (const binding of bindings) {
+      await ctx.db.delete(binding._id);
+    }
+    
+    await ctx.db.delete(doc._id);
+    
+    // Trigger registry rebuild
+    await safeRunAfter(ctx.scheduler, 0,
+      internal.executorNode.rebuildToolInventoryInternal,
+      { workspaceId: args.workspaceId }
+    );
+  },
+});
+```
+
+<Warning>
+Deleting a tool source also deletes all associated credentials. Tasks using tools from this source will fail after deletion.
+</Warning>
+
+## Best Practices
+
+### Source Organization
+
+- Use **workspace-scoped** sources for environment-specific APIs
+- Use **organization-scoped** sources for shared tools across teams
+- Name sources clearly to reflect their purpose (e.g., "GitHub Production", "Slack Staging")
+
+### Authentication
+
+- Configure auth in the source config when possible
+- Use credential scope (account/workspace/org) to control access
+- Prefer organization-scoped credentials for shared API keys
+
+### Registry Management
+
+- Monitor registry refresh errors in the dashboard
+- Review type quality metrics to identify poorly-typed sources
+- Use auth profiles to configure credentials correctly
+
+### OpenAPI Best Practices
+
+- Provide complete OpenAPI specs with parameter descriptions
+- Use `operationId` for stable tool names
+- Include examples for better type inference
+
+### GraphQL Best Practices
+
+- Enable introspection on your GraphQL endpoint
+- Use descriptive field names and descriptions
+- Consider splitting large schemas into multiple sources
+
+### MCP Best Practices
+
+- Test MCP servers locally before deploying
+- Handle connection errors gracefully
+- Use environment variables for configuration
+
+## Related Features
+
+- [Credentials](/features/credentials) - Bind credentials to tool sources
+- [Policies](/features/policies) - Control tool access with policies
+- [Tasks](/features/tasks) - Execute tasks that invoke tools

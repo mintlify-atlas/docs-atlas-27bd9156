@@ -1,0 +1,324 @@
+---
+title: OAuth Discovery Endpoints
+description: OAuth 2.0 metadata discovery and anonymous authentication endpoints
+---
+
+Executor implements OAuth 2.0 Protected Resource metadata discovery endpoints and provides anonymous authentication token issuance.
+
+## OAuth Protected Resource Metadata
+
+Discovers OAuth configuration for MCP endpoints.
+
+```http
+GET /.well-known/oauth-protected-resource
+```
+
+### Query Parameters
+
+<ParamField query="resource" type="string" optional>
+  Resource hint URL. If provided, must match the server's origin. Determines which MCP endpoint's metadata to return.
+</ParamField>
+
+### Response
+
+```json
+{
+  "resource": "https://executor.example.com/v1/mcp",
+  "authorization_servers": [
+    "https://auth.example.com"
+  ],
+  "bearer_methods_supported": ["header"]
+}
+```
+
+<ResponseField name="resource" type="string">
+  The MCP endpoint URL that requires authorization
+</ResponseField>
+
+<ResponseField name="authorization_servers" type="string[]">
+  Array of OAuth authorization server URLs
+</ResponseField>
+
+<ResponseField name="bearer_methods_supported" type="string[]">
+  Supported bearer token transmission methods (always `["header"]`)
+</ResponseField>
+
+### Behavior
+
+- If `resource` parameter is not provided, defaults to `/v1/mcp`
+- If `resource` points to anonymous MCP endpoints (`/v1/mcp/anonymous`, `/mcp/anonymous`), returns 404
+- If `resource` origin doesn't match server origin, returns 400
+- Authorization server URL is sourced from environment:
+  - `MCP_AUTHORIZATION_SERVER`
+  - `MCP_AUTHORIZATION_SERVER_URL`
+  - `WORKOS_AUTHKIT_ISSUER`
+  - `WORKOS_AUTHKIT_DOMAIN`
+
+### Example Request
+
+```bash
+curl "https://executor.example.com/.well-known/oauth-protected-resource?resource=https://executor.example.com/v1/mcp"
+```
+
+### Error Responses
+
+<ResponseField name="400 Bad Request">
+  Invalid resource hint:
+  ```json
+  { "error": "Invalid resource hint" }
+  ```
+  Or resource hint origin mismatch:
+  ```json
+  { "error": "resource hint origin must match this server" }
+  ```
+</ResponseField>
+
+<ResponseField name="404 Not Found">
+  OAuth not configured (self-hosted):
+  ```json
+  { "error": "MCP OAuth is not configured" }
+  ```
+  Or anonymous endpoint requested:
+  ```json
+  { "error": "Anonymous MCP does not use OAuth discovery" }
+  ```
+</ResponseField>
+
+<ResponseField name="503 Service Unavailable">
+  OAuth required but not configured (cloud):
+  ```json
+  { "error": "MCP OAuth must be configured for cloud deployments" }
+  ```
+</ResponseField>
+
+## OAuth Authorization Server Metadata
+
+Proxy endpoint for upstream authorization server metadata.
+
+```http
+GET /.well-known/oauth-authorization-server
+```
+
+### Response
+
+Proxies the response from the configured authorization server's `/.well-known/oauth-authorization-server` endpoint.
+
+Typical response structure:
+
+```json
+{
+  "issuer": "https://auth.example.com",
+  "authorization_endpoint": "https://auth.example.com/oauth2/authorize",
+  "token_endpoint": "https://auth.example.com/oauth2/token",
+  "jwks_uri": "https://auth.example.com/oauth2/jwks",
+  "response_types_supported": ["code"],
+  "grant_types_supported": ["authorization_code", "refresh_token"],
+  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"]
+}
+```
+
+### Example Request
+
+```bash
+curl https://executor.example.com/.well-known/oauth-authorization-server
+```
+
+### Error Responses
+
+<ResponseField name="404 Not Found">
+  OAuth not configured (self-hosted):
+  ```json
+  { "error": "MCP OAuth is not configured" }
+  ```
+</ResponseField>
+
+<ResponseField name="503 Service Unavailable">
+  OAuth required but not configured (cloud):
+  ```json
+  { "error": "MCP OAuth must be configured for cloud deployments" }
+  ```
+</ResponseField>
+
+## Anonymous Authentication Token
+
+Issues short-lived JWT tokens for anonymous account access.
+
+```http
+POST /auth/anonymous/token
+GET /auth/anonymous/token
+```
+
+Both methods are supported and behave identically.
+
+### Rate Limiting
+
+30 requests per minute per IP + user agent.
+
+### Response
+
+```json
+{
+  "tokenType": "Bearer",
+  "accessToken": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImFub255bW91cy1hdXRoIiwidHlwIjoiSldUIn0...",
+  "accountId": "anon_abc123def456789",
+  "expiresAtMs": 1234567890000
+}
+```
+
+<ResponseField name="tokenType" type="string">
+  Always `"Bearer"`
+</ResponseField>
+
+<ResponseField name="accessToken" type="string">
+  ES256-signed JWT token. Contains:
+  - `iss` - Issuer (deployment URL)
+  - `sub` - Anonymous account ID
+  - `aud` - Audience (`executor-anonymous`)
+  - `provider` - Always `"anonymous"`
+  - `iat` - Issued at timestamp
+  - `nbf` - Not before (iat - 5 seconds)
+  - `exp` - Expiration timestamp
+</ResponseField>
+
+<ResponseField name="accountId" type="string">
+  Unique anonymous account identifier. Format: `anon_<32 hex chars>`
+</ResponseField>
+
+<ResponseField name="expiresAtMs" type="number">
+  Token expiration time in milliseconds since Unix epoch
+</ResponseField>
+
+### Token Lifetime
+
+Default: 3600 seconds (1 hour). Configurable via `ANONYMOUS_AUTH_TOKEN_TTL_SECONDS` environment variable.
+
+### Example Request
+
+```bash
+curl -X POST https://executor.example.com/auth/anonymous/token
+```
+
+```bash
+curl https://executor.example.com/auth/anonymous/token
+```
+
+### Error Responses
+
+<ResponseField name="400 Bad Request">
+  Token generation failed:
+  ```json
+  { "error": "Failed to issue anonymous token" }
+  ```
+</ResponseField>
+
+<ResponseField name="429 Too Many Requests">
+  Rate limit exceeded:
+  ```json
+  { "error": "Rate limit exceeded" }
+  ```
+  Includes `Retry-After` header (seconds).
+</ResponseField>
+
+<ResponseField name="503 Service Unavailable">
+  Anonymous auth not configured:
+  ```json
+  { "error": "Anonymous auth is not configured" }
+  ```
+</ResponseField>
+
+### Configuration Requirements
+
+Anonymous token issuance requires:
+
+<ParamField path="ANONYMOUS_AUTH_PRIVATE_KEY_PEM" type="string" required>
+  ES256 private key in PEM format. Used to sign tokens. Supports `\n` escape sequences.
+</ParamField>
+
+<ParamField path="ANONYMOUS_AUTH_PUBLIC_KEY_PEM" type="string" required>
+  ES256 public key in PEM format. Used by JWKS endpoint. Supports `\n` escape sequences.
+</ParamField>
+
+<ParamField path="ANONYMOUS_AUTH_TOKEN_TTL_SECONDS" type="number" optional>
+  Token lifetime in seconds. Default: 3600 (1 hour).
+</ParamField>
+
+## JSON Web Key Set (JWKS)
+
+Publishes the public key for verifying anonymous tokens.
+
+```http
+GET /.well-known/jwks.json
+```
+
+### Response
+
+```json
+{
+  "keys": [
+    {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "...",
+      "y": "...",
+      "kid": "anonymous-auth",
+      "alg": "ES256",
+      "use": "sig"
+    }
+  ]
+}
+```
+
+<ResponseField name="keys" type="array">
+  Array of JWK public keys. Contains a single ES256 key:
+  - `kid` - Key ID (always `"anonymous-auth"`)
+  - `alg` - Algorithm (always `"ES256"`)
+  - `use` - Key usage (always `"sig"`)
+  - `kty` - Key type (always `"EC"`)
+  - `crv` - Curve (always `"P-256"`)
+  - `x`, `y` - Public key coordinates (Base64URL-encoded)
+</ResponseField>
+
+### Example Request
+
+```bash
+curl https://executor.example.com/.well-known/jwks.json
+```
+
+### Error Responses
+
+<ResponseField name="503 Service Unavailable">
+  Anonymous auth not configured:
+  ```json
+  { "error": "Anonymous auth is not configured" }
+  ```
+</ResponseField>
+
+## Implementation Details
+
+Source files:
+
+- OAuth handlers: `executor/packages/database/convex/http/oauth_handlers.ts:11-86`
+- Anonymous auth: `executor/packages/database/convex/http/anonymous_auth.ts:91-159`
+- MCP auth config: `executor/packages/database/convex/http/mcp_auth.ts:10-79`
+- Rate limiting: `executor/packages/database/convex/http/rate_limit.ts:84-93`
+
+### Token Verification
+
+Anonymous tokens are verified using the JWKS endpoint. Token claims:
+
+```json
+{
+  "alg": "ES256",
+  "kid": "anonymous-auth",
+  "typ": "JWT",
+  "iss": "https://executor.example.com",
+  "sub": "anon_abc123def456789",
+  "aud": "executor-anonymous",
+  "provider": "anonymous",
+  "iat": 1234567890,
+  "nbf": 1234567885,
+  "exp": 1234571490
+}
+```
+
+The `provider: "anonymous"` claim distinguishes anonymous tokens from WorkOS tokens.

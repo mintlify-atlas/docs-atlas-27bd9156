@@ -1,0 +1,288 @@
+---
+title: "execute"
+description: "Execute TypeScript code in a sandboxed runtime with tool access"
+---
+
+## Overview
+
+The `execute` tool runs TypeScript code in a sandboxed execution environment with access to workspace tools via the `tools` object. Code is executed with configurable timeouts, and results are returned synchronously by default.
+
+## Endpoint
+
+<CodeGroup>
+```bash Authenticated
+POST https://your-deployment.convex.site/mcp
+```
+
+```bash Anonymous
+POST https://your-deployment.convex.site/mcp/anonymous?workspaceId=<WORKSPACE_ID>
+```
+</CodeGroup>
+
+## Authentication
+
+<Tabs>
+  <Tab title="OAuth (Recommended)">
+    Use WorkOS OAuth tokens with the `/mcp` endpoint:
+
+    ```bash
+    Authorization: Bearer <WORKOS_TOKEN>
+    ```
+
+    Requires `MCP_AUTHORIZATION_SERVER` to be configured on the server.
+  </Tab>
+  
+  <Tab title="API Key">
+    Use API key authentication with the `/mcp/anonymous` endpoint:
+
+    ```bash
+    Authorization: Bearer <API_KEY>
+    # or
+    x-api-key: <API_KEY>
+    ```
+
+    Must include `workspaceId` query parameter.
+  </Tab>
+</Tabs>
+
+## MCP Tool Call
+
+```json MCP Request
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "execute",
+    "arguments": {
+      "code": "return tools.catalog.namespaces({})",
+      "timeoutMs": 30000,
+      "runtimeId": "cloudflare-worker",
+      "waitForResult": true
+    }
+  }
+}
+```
+
+## Parameters
+
+<ParamField path="code" type="string" required>
+  TypeScript code to execute. Use `return` to return a value. The code has access to a typed `tools` object for calling external services. Console output is not returned.
+</ParamField>
+
+<ParamField path="timeoutMs" type="number" default="300000">
+  Maximum execution time in milliseconds (1-600000). Default is 5 minutes.
+</ParamField>
+
+<ParamField path="runtimeId" type="string">
+  Runtime environment identifier. Defaults to workspace default runtime. Common values:
+  - `cloudflare-worker` - Cloudflare Worker sandbox
+  - `local-bun` - Local Bun runtime (self-hosted only)
+</ParamField>
+
+<ParamField path="metadata" type="object">
+  Optional metadata to attach to the task for tracking and filtering.
+</ParamField>
+
+<ParamField path="sessionId" type="string">
+  Session identifier for grouping related tasks. Used for anonymous context initialization.
+</ParamField>
+
+<ParamField path="waitForResult" type="boolean" default="true">
+  Whether to wait for task completion before returning. When `false`, returns immediately with task ID.
+</ParamField>
+
+<ParamField path="resultTimeoutMs" type="number">
+  Maximum time to wait for results in milliseconds (100-900000). Defaults to `timeoutMs + 30000` with a minimum of 120 seconds.
+</ParamField>
+
+## Response
+
+<ResponseField name="content" type="array" required>
+  Array of text content objects with the execution summary.
+  
+  <Expandable title="content item">
+    <ResponseField name="type" type="string" required>
+      Always `"text"`
+    </ResponseField>
+    
+    <ResponseField name="text" type="string" required>
+      Human-readable task summary including status, exit code, error, and result.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="structuredContent" type="object">
+  Structured execution details.
+  
+  <Expandable title="properties">
+    <ResponseField name="taskId" type="string">
+      Unique task identifier
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      Task status: `queued`, `running`, `completed`, `failed`, `timed_out`, or `denied`
+    </ResponseField>
+    
+    <ResponseField name="runtimeId" type="string">
+      Runtime environment used
+    </ResponseField>
+    
+    <ResponseField name="exitCode" type="number">
+      Process exit code (0 for success)
+    </ResponseField>
+    
+    <ResponseField name="error" type="string">
+      Error message if execution failed
+    </ResponseField>
+    
+    <ResponseField name="result" type="any">
+      Return value from the executed code
+    </ResponseField>
+    
+    <ResponseField name="workspaceId" type="string">
+      Workspace ID where task executed
+    </ResponseField>
+    
+    <ResponseField name="accountId" type="string">
+      Account ID that created the task
+    </ResponseField>
+    
+    <ResponseField name="sessionId" type="string">
+      Session identifier for the task
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="isError" type="boolean">
+  Indicates if the execution failed (status is not `completed`)
+</ResponseField>
+
+## Examples
+
+<CodeGroup>
+```typescript Simple Execution
+// MCP tool call
+{
+  "name": "execute",
+  "arguments": {
+    "code": "return 1 + 1"
+  }
+}
+
+// Response
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "taskId: task_123\nstatus: completed\nruntimeId: cloudflare-worker\nexitCode: 0\n\n```json\n2\n```"
+    }
+  ],
+  "structuredContent": {
+    "taskId": "task_123",
+    "status": "completed",
+    "runtimeId": "cloudflare-worker",
+    "exitCode": 0,
+    "result": 2,
+    "workspaceId": "workspace_abc",
+    "accountId": "account_xyz",
+    "sessionId": "session_123"
+  }
+}
+```
+
+```typescript Tool Discovery
+// Discover available tools
+{
+  "name": "execute",
+  "arguments": {
+    "code": "const discovered = await tools.discover({ query: 'github', limit: 5, compact: true }); return discovered"
+  }
+}
+```
+
+```typescript API Call
+// Call external API via tools
+{
+  "name": "execute",
+  "arguments": {
+    "code": "const repos = await tools.github.repos.listForOrg({ org: 'octocat' }); return repos.slice(0, 5).map(r => ({ name: r.name, stars: r.stargazers_count }))",
+    "timeoutMs": 60000
+  }
+}
+```
+
+```typescript Async Without Waiting
+// Queue task and return immediately
+{
+  "name": "execute",
+  "arguments": {
+    "code": "// Long-running task\nawait tools.slack.postMessage({ channel: 'general', text: 'Starting batch process' }); return 'queued'",
+    "waitForResult": false
+  }
+}
+
+// Response (immediate)
+{
+  "content": [{ "type": "text", "text": "Queued task task_123" }],
+  "structuredContent": {
+    "taskId": "task_123",
+    "status": "queued",
+    "workspaceId": "workspace_abc",
+    "accountId": "account_xyz"
+  }
+}
+```
+</CodeGroup>
+
+## Runtime Environment
+
+The execution sandbox provides:
+
+- **TypeScript support** - Full TypeScript syntax and type checking
+- **tools object** - Typed methods for calling workspace-configured external services
+- **No filesystem access** - Use `tools.*` for all external interactions
+- **No process/import access** - Pure TypeScript execution only
+- **Approval gates** - Tool calls may require approval based on workspace policies
+
+### Tool Discovery Pattern
+
+```typescript
+// Best practice: single broad discovery pass
+const discovered = await tools.discover({ 
+  query: 'github repos',
+  limit: 12,
+  compact: true // Get hints, not full schemas
+});
+
+// Use bestPath when available
+if (discovered.bestPath) {
+  const result = await tools[discovered.bestPath](params);
+}
+
+// Or iterate results
+for (const tool of discovered.results) {
+  console.log(tool.path, tool.hint);
+}
+```
+
+### Error Handling
+
+- **Timeout errors** - Task status becomes `timed_out` if execution exceeds `timeoutMs`
+- **Runtime errors** - Exceptions are captured in the `error` field with status `failed`
+- **Approval denials** - Tool calls denied by policy result in status `denied`
+- **Exit codes** - Non-zero exit codes indicate execution failures
+
+## Rate Limits
+
+Rate limits are enforced per workspace:
+
+- Default: 100 requests per minute
+- Configurable via workspace settings
+- Returns 429 status when exceeded
+
+## Related
+
+- [Anonymous MCP Endpoint](/api/mcp-anonymous)
+- [Tool Discovery](/api/mcp-tools)
+- [Workspaces](/features/workspaces)

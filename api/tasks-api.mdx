@@ -1,0 +1,299 @@
+---
+title: 'Tasks API'
+description: 'Convex functions for creating and managing task execution'
+---
+
+## Overview
+
+Tasks represent code execution requests in Executor. The Tasks API provides functions to create, retrieve, and manage task lifecycle and metadata.
+
+## Main Functions
+
+### createTask
+
+Creates a new task for code execution. This is a workspace action that requires authentication.
+
+<ParamField path="code" type="string" required>
+  The JavaScript/TypeScript code to execute
+</ParamField>
+
+<ParamField path="timeoutMs" type="number">
+  Task timeout in milliseconds. Defaults to `DEFAULT_TASK_TIMEOUT_MS` if not specified. Maximum value is `MAX_TASK_TIMEOUT_MS`.
+</ParamField>
+
+<ParamField path="runtimeId" type="string">
+  The runtime environment to execute the task in. If not specified, a default runtime will be used.
+</ParamField>
+
+<ParamField path="metadata" type="object">
+  Optional metadata to attach to the task for tracking and context
+</ParamField>
+
+<ParamField path="accountId" type="Id<'accounts'>">
+  The account ID associated with this task execution
+</ParamField>
+
+<ParamField path="waitForResult" type="boolean">
+  If true, waits for the task to complete before returning
+</ParamField>
+
+<ResponseField name="id" type="string">
+  Unique task identifier
+</ResponseField>
+
+<ResponseField name="code" type="string">
+  The code that will be executed
+</ResponseField>
+
+<ResponseField name="runtimeId" type="string">
+  Runtime environment identifier
+</ResponseField>
+
+<ResponseField name="status" type="TaskStatus">
+  Current task status: `"queued"`, `"running"`, `"completed"`, `"failed"`, `"timed_out"`, or `"denied"`
+</ResponseField>
+
+<ResponseField name="timeoutMs" type="number">
+  Task timeout in milliseconds
+</ResponseField>
+
+<ResponseField name="workspaceId" type="Id<'workspaces'>">
+  Workspace this task belongs to
+</ResponseField>
+
+<ResponseField name="accountId" type="Id<'accounts'>" optional>
+  Account that created the task
+</ResponseField>
+
+<ResponseField name="clientId" type="string" optional>
+  Client identifier for tracking
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp of task creation
+</ResponseField>
+
+<ResponseField name="updatedAt" type="number">
+  Unix timestamp of last update
+</ResponseField>
+
+<ResponseField name="startedAt" type="number" optional>
+  Unix timestamp when task execution started
+</ResponseField>
+
+<ResponseField name="completedAt" type="number" optional>
+  Unix timestamp when task completed
+</ResponseField>
+
+<ResponseField name="error" type="string" optional>
+  Error message if task failed
+</ResponseField>
+
+<ResponseField name="exitCode" type="number" optional>
+  Process exit code for completed tasks
+</ResponseField>
+
+```javascript
+// Example: Create a task with timeout
+const task = await createTask({
+  code: 'console.log("Hello from Executor")',
+  timeoutMs: 30000,
+  runtimeId: 'default',
+  metadata: { source: 'api-client', version: '1.0' }
+});
+
+console.log(`Task created: ${task.id}`);
+```
+
+## Internal Functions
+
+### createTask (Internal)
+
+Internal mutation for creating tasks with full control over workspace and account associations.
+
+<ParamField path="id" type="string" required>
+  Unique task identifier
+</ParamField>
+
+<ParamField path="code" type="string" required>
+  Code to execute
+</ParamField>
+
+<ParamField path="runtimeId" type="string" required>
+  Runtime identifier
+</ParamField>
+
+<ParamField path="timeoutMs" type="number">
+  Timeout in milliseconds
+</ParamField>
+
+<ParamField path="metadata" type="object">
+  Task metadata
+</ParamField>
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  Workspace ID
+</ParamField>
+
+<ParamField path="accountId" type="Id<'accounts'>">
+  Account ID
+</ParamField>
+
+<ParamField path="clientId" type="string">
+  Client identifier
+</ParamField>
+
+### getTask
+
+Retrieves a task by its ID.
+
+<ParamField path="taskId" type="string" required>
+  The task identifier
+</ParamField>
+
+Returns the task record or `null` if not found.
+
+```javascript
+const task = await getTask({ taskId: 'task_abc123' });
+if (task) {
+  console.log(`Status: ${task.status}`);
+}
+```
+
+### listTasks
+
+Lists all tasks in a workspace, ordered by creation time (most recent first).
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  Workspace to list tasks from
+</ParamField>
+
+Returns up to 500 most recent tasks.
+
+```javascript
+const tasks = await listTasks({ workspaceId });
+console.log(`Found ${tasks.length} tasks`);
+```
+
+### getTaskInWorkspace
+
+Retrieves a task only if it belongs to the specified workspace.
+
+<ParamField path="taskId" type="string" required>
+  Task identifier
+</ParamField>
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  Workspace ID to verify against
+</ParamField>
+
+Returns the task or `null` if not found or workspace mismatch.
+
+### listQueuedTaskIds
+
+Retrieves task IDs for tasks in the `"queued"` status, ordered by creation time.
+
+<ParamField path="limit" type="number">
+  Maximum number of task IDs to return (default: 20)
+</ParamField>
+
+Returns an array of task ID strings.
+
+```javascript
+const queuedIds = await listQueuedTaskIds({ limit: 50 });
+console.log(`${queuedIds.length} tasks waiting in queue`);
+```
+
+### markTaskRunning
+
+Transitions a task from `"queued"` to `"running"` status.
+
+<ParamField path="taskId" type="string" required>
+  Task to mark as running
+</ParamField>
+
+Returns the updated task or `null` if the task wasn't in queued status.
+
+### markTaskFinished
+
+Marks a task as completed with a final status.
+
+<ParamField path="taskId" type="string" required>
+  Task identifier
+</ParamField>
+
+<ParamField path="status" type="CompletedTaskStatus" required>
+  Final status: `"completed"`, `"failed"`, `"timed_out"`, or `"denied"`
+</ParamField>
+
+<ParamField path="exitCode" type="number">
+  Process exit code
+</ParamField>
+
+<ParamField path="error" type="string">
+  Error message if task failed
+</ParamField>
+
+```javascript
+await markTaskFinished({
+  taskId: 'task_abc123',
+  status: 'completed',
+  exitCode: 0
+});
+```
+
+### setTaskStorageDefaultInstance
+
+Sets the default storage instance for a task at a given scope level.
+
+<ParamField path="taskId" type="string" required>
+  Task identifier
+</ParamField>
+
+<ParamField path="scopeType" type="StorageScopeType" required>
+  Storage scope: `"scratch"`, `"account"`, `"workspace"`, or `"organization"`
+</ParamField>
+
+<ParamField path="instanceId" type="string" required>
+  Storage instance identifier
+</ParamField>
+
+<ParamField path="setCurrent" type="boolean">
+  If true (default), also sets this as the current instance
+</ParamField>
+
+### trackTaskStorageAccess
+
+Records storage instance access by a task.
+
+<ParamField path="taskId" type="string" required>
+  Task identifier
+</ParamField>
+
+<ParamField path="instanceId" type="string" required>
+  Storage instance that was accessed
+</ParamField>
+
+<ParamField path="scopeType" type="StorageScopeType">
+  Storage scope type
+</ParamField>
+
+<ParamField path="accessType" type="StorageAccessType" required>
+  Type of access: `"opened"`, `"provided"`, or `"accessed"`
+</ParamField>
+
+```javascript
+await trackTaskStorageAccess({
+  taskId: 'task_abc123',
+  instanceId: 'storage_xyz',
+  scopeType: 'workspace',
+  accessType: 'opened'
+});
+```
+
+## Related Types
+
+- `TaskStatus`: `"queued"` | `"running"` | `"completed"` | `"failed"` | `"timed_out"` | `"denied"`
+- `CompletedTaskStatus`: `"completed"` | `"failed"` | `"timed_out"` | `"denied"`
+- `StorageScopeType`: `"scratch"` | `"account"` | `"workspace"` | `"organization"`
+- `StorageAccessType`: `"opened"` | `"provided"` | `"accessed"`

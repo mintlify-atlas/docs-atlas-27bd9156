@@ -1,0 +1,380 @@
+---
+title: 'Tool Sources API'
+description: 'Convex functions for managing MCP servers, OpenAPI specs, and GraphQL endpoints'
+---
+
+## Overview
+
+Tool Sources define the external tools and APIs available for task execution in Executor. The Tool Sources API manages MCP servers, OpenAPI specifications, and GraphQL endpoints that provide tools to your workspaces.
+
+## Functions
+
+### upsertToolSource
+
+Creates or updates a tool source. This is an internal mutation used by the system.
+
+<ParamField path="id" type="string">
+  Unique tool source identifier. If not provided, a new ID will be generated with format `src_{uuid}`.
+</ParamField>
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  Workspace this tool source belongs to
+</ParamField>
+
+<ParamField path="scopeType" type="'workspace' | 'organization'">
+  Scope of the tool source (default: `"workspace"`). Organization-scoped sources are available to all workspaces in the organization.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Display name for the tool source. Must be unique within the scope.
+</ParamField>
+
+<ParamField path="type" type="'mcp' | 'openapi' | 'graphql'" required>
+  Type of tool source
+</ParamField>
+
+<ParamField path="config" type="object" required>
+  Configuration object for the tool source. Structure varies by type:
+  
+  **MCP Configuration:**
+  - `url` (string): MCP server URL
+  - `auth` (object, optional): Authentication configuration
+  
+  **OpenAPI Configuration:**
+  - `spec` (string | object): OpenAPI specification URL or inline spec
+  - `auth` (object, optional): Authentication configuration
+  
+  **GraphQL Configuration:**
+  - `endpoint` (string): GraphQL endpoint URL
+  - `auth` (object, optional): Authentication configuration
+</ParamField>
+
+<ParamField path="enabled" type="boolean">
+  Whether the tool source is enabled (default: `true`)
+</ParamField>
+
+<ResponseField name="id" type="string">
+  Tool source identifier
+</ResponseField>
+
+<ResponseField name="scopeType" type="'workspace' | 'organization'">
+  Scope of the tool source
+</ResponseField>
+
+<ResponseField name="organizationId" type="Id<'organizations'>" optional>
+  Organization ID (always set)
+</ResponseField>
+
+<ResponseField name="workspaceId" type="Id<'workspaces'>" optional>
+  Workspace ID (set for workspace-scoped sources)
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Tool source display name
+</ResponseField>
+
+<ResponseField name="type" type="'mcp' | 'openapi' | 'graphql'">
+  Tool source type
+</ResponseField>
+
+<ResponseField name="configVersion" type="number">
+  Configuration schema version
+</ResponseField>
+
+<ResponseField name="config" type="object">
+  Normalized configuration object
+</ResponseField>
+
+<ResponseField name="specHash" type="string" optional>
+  Hash of the specification for change detection
+</ResponseField>
+
+<ResponseField name="authFingerprint" type="string" optional>
+  Fingerprint of the auth configuration
+</ResponseField>
+
+<ResponseField name="enabled" type="boolean">
+  Whether the source is enabled
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp of creation
+</ResponseField>
+
+<ResponseField name="updatedAt" type="number">
+  Unix timestamp of last update
+</ResponseField>
+
+```javascript
+// Create an MCP tool source
+const mcpSource = await upsertToolSource({
+  workspaceId: workspace.id,
+  scopeType: 'workspace',
+  name: 'GitHub MCP',
+  type: 'mcp',
+  config: {
+    url: 'https://mcp.github.com',
+    auth: {
+      type: 'bearer',
+      mode: 'workspace'
+    }
+  },
+  enabled: true
+});
+
+// Create an OpenAPI tool source
+const apiSource = await upsertToolSource({
+  workspaceId: workspace.id,
+  name: 'Stripe API',
+  type: 'openapi',
+  config: {
+    spec: 'https://api.stripe.com/openapi.json',
+    auth: {
+      type: 'bearer',
+      mode: 'account',
+      header: 'Authorization'
+    }
+  }
+});
+
+// Create organization-scoped GraphQL source
+const graphqlSource = await upsertToolSource({
+  workspaceId: workspace.id,
+  scopeType: 'organization',
+  name: 'Internal GraphQL API',
+  type: 'graphql',
+  config: {
+    endpoint: 'https://api.company.com/graphql',
+    auth: {
+      type: 'apiKey',
+      mode: 'organization',
+      header: 'X-API-Key'
+    }
+  }
+});
+```
+
+### listToolSources
+
+Lists all tool sources available to a workspace, including both workspace-scoped and organization-scoped sources.
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  Workspace to list tool sources for
+</ParamField>
+
+Returns an array of tool source objects, sorted alphabetically by name. Includes:
+- All workspace-scoped sources for the workspace
+- All organization-scoped sources for the workspace's organization
+
+```javascript
+const sources = await listToolSources({ workspaceId });
+
+for (const source of sources) {
+  console.log(`${source.name} (${source.type})`);
+  console.log(`  Scope: ${source.scopeType}`);
+  console.log(`  Enabled: ${source.enabled}`);
+  
+  if (source.type === 'mcp') {
+    console.log(`  URL: ${source.config.url}`);
+  }
+}
+```
+
+### deleteToolSource
+
+Deletes a tool source and all associated credentials.
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  Workspace context for authorization
+</ParamField>
+
+<ParamField path="sourceId" type="string" required>
+  Tool source identifier to delete
+</ParamField>
+
+Returns `true` if the source was deleted, `false` if not found or access denied.
+
+**Notes:**
+- Deleting a source also deletes all credential bindings associated with it
+- Organization-scoped sources can be deleted from any workspace in the organization
+- After deletion, the tool inventory is automatically rebuilt
+
+```javascript
+const success = await deleteToolSource({
+  workspaceId,
+  sourceId: 'src_abc123'
+});
+
+if (success) {
+  console.log('Tool source deleted successfully');
+} else {
+  console.log('Failed to delete tool source');
+}
+```
+
+## Tool Source Types
+
+### MCP (Model Context Protocol)
+
+MCP servers provide structured tool interfaces for AI agents.
+
+```javascript
+{
+  type: 'mcp',
+  config: {
+    url: 'https://mcp.example.com',
+    auth: {
+      type: 'bearer',
+      mode: 'workspace',
+      header: 'Authorization'
+    }
+  }
+}
+```
+
+### OpenAPI
+
+OpenAPI specifications expose REST APIs as tools.
+
+```javascript
+{
+  type: 'openapi',
+  config: {
+    spec: 'https://api.example.com/openapi.json',
+    // or inline spec:
+    // spec: { openapi: '3.0.0', ... },
+    auth: {
+      type: 'apiKey',
+      mode: 'account',
+      header: 'X-API-Key'
+    }
+  }
+}
+```
+
+### GraphQL
+
+GraphQL endpoints provide queryable data sources.
+
+```javascript
+{
+  type: 'graphql',
+  config: {
+    endpoint: 'https://api.example.com/graphql',
+    auth: {
+      type: 'bearer',
+      mode: 'organization'
+    }
+  }
+}
+```
+
+## Authentication Configuration
+
+Tool sources support various authentication methods:
+
+### Bearer Token
+
+```javascript
+auth: {
+  type: 'bearer',
+  mode: 'workspace', // or 'account', 'organization'
+  header: 'Authorization' // optional, defaults to 'Authorization'
+}
+```
+
+### API Key
+
+```javascript
+auth: {
+  type: 'apiKey',
+  mode: 'account',
+  header: 'X-API-Key' // required for apiKey type
+}
+```
+
+### Basic Authentication
+
+```javascript
+auth: {
+  type: 'basic',
+  mode: 'workspace'
+}
+```
+
+### No Authentication
+
+```javascript
+auth: {
+  type: 'none'
+}
+// or omit the auth field entirely
+```
+
+### Mixed Authentication
+
+For sources that support multiple auth methods:
+
+```javascript
+auth: {
+  type: 'mixed',
+  mode: 'account'
+}
+```
+
+## Scope Types
+
+### Workspace Scope
+
+Workspace-scoped sources are only available within a single workspace.
+
+```javascript
+await upsertToolSource({
+  workspaceId,
+  scopeType: 'workspace',
+  name: 'Dev GitHub',
+  type: 'mcp',
+  config: { url: 'https://github-dev.example.com' }
+});
+```
+
+### Organization Scope
+
+Organization-scoped sources are available to all workspaces in the organization.
+
+```javascript
+await upsertToolSource({
+  workspaceId, // needed for org context
+  scopeType: 'organization',
+  name: 'Company API',
+  type: 'openapi',
+  config: { spec: 'https://internal-api.company.com/spec.json' }
+});
+```
+
+## Tool Inventory Rebuild
+
+After upserting or deleting a tool source, the system automatically rebuilds the tool inventory:
+
+- Fetches updated tool definitions from the source
+- Updates available tool paths and signatures
+- Re-evaluates access policies
+- Notifies connected clients of changes
+
+This process happens asynchronously via the scheduler.
+
+```javascript
+// After upsert or delete, inventory rebuilds automatically
+await upsertToolSource({ /* ... */ });
+// Rebuild is scheduled in background
+
+// Tools become available shortly after
+const tools = await listAvailableTools({ workspaceId });
+```
+
+## Related Types
+
+- `ToolSourceType`: `"mcp"` | `"openapi"` | `"graphql"`
+- `ToolSourceScopeType`: `"organization"` | `"workspace"`
+- `SourceAuthType`: `"none"` | `"bearer"` | `"apiKey"` | `"basic"` | `"mixed"`
+- `CredentialScope`: `"account"` | `"organization"` | `"workspace"`

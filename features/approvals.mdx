@@ -1,0 +1,344 @@
+---
+title: 'Approvals'
+description: 'Human-in-the-loop approval workflows for sensitive tool calls'
+---
+
+## Overview
+
+Approvals provide a human-in-the-loop mechanism for controlling access to sensitive tools. When a task attempts to call a tool that requires approval, execution pauses until an authorized reviewer approves or denies the request.
+
+## Approval Lifecycle
+
+<Steps>
+  <Step title="Tool Call Requested">
+    A running task attempts to call a tool that matches a policy requiring approval.
+    
+    An approval record is created with status `"pending"`.
+    
+    **Source**: `packages/database/convex/database/approvals.ts:9-43`
+  </Step>
+  
+  <Step title="Task Pauses">
+    The task execution pauses, waiting for the approval to be resolved. The task remains in `"running"` status.
+  </Step>
+  
+  <Step title="Reviewer Decision">
+    A workspace admin reviews the approval request and makes a decision:
+    
+    - **Approved**: Tool call proceeds
+    - **Denied**: Tool call is rejected, task may fail or handle the error
+    
+    **Source**: `packages/database/convex/database/approvals.ts:122-146`
+  </Step>
+  
+  <Step title="Execution Resumes">
+    The task execution continues based on the reviewer's decision.
+  </Step>
+</Steps>
+
+## Creating Approvals
+
+Approvals are created automatically when a policy requires human review:
+
+```typescript
+// From approvals.ts:9-43
+export const createApproval = internalMutation({
+  args: {
+    id: v.string(),              // approval_<uuid>
+    taskId: v.string(),          // references tasks.taskId
+    toolPath: v.string(),        // e.g., "github/create_issue"
+    input: v.optional(jsonObjectValidator),
+  },
+  handler: async (ctx, args) => {
+    const task = await getTaskDoc(ctx, args.taskId);
+    if (!task) {
+      throw new Error(`Task not found for approval: ${args.taskId}`);
+    }
+
+    await ctx.db.insert("approvals", {
+      approvalId: args.id,
+      taskId: args.taskId,
+      workspaceId: task.workspaceId,
+      toolPath: args.toolPath,
+      input: args.input ?? {},
+      status: "pending",
+      createdAt: now,
+    });
+  },
+});
+```
+
+## Approval Properties
+
+<ParamField path="approvalId" type="string" required>
+  Unique domain identifier (e.g., `approval_<uuid>`).
+</ParamField>
+
+<ParamField path="taskId" type="string" required>
+  References the task that requested this approval (via `tasks.taskId`).
+</ParamField>
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  The workspace this approval belongs to. Inherited from the task.
+</ParamField>
+
+<ParamField path="toolPath" type="string" required>
+  The tool being called (e.g., `"github/create_issue"`, `"slack/post_message"`).
+</ParamField>
+
+<ParamField path="input" type="Record<string, unknown>" default="{}">
+  The input arguments for the tool call. Reviewers can inspect this to understand what the tool will do.
+</ParamField>
+
+<ParamField path="status" type="'pending' | 'approved' | 'denied'" required>
+  Current approval status.
+</ParamField>
+
+<ParamField path="reviewerId" type="string">
+  Account ID or anonymous ID of the reviewer who resolved the approval.
+</ParamField>
+
+<ParamField path="reason" type="string">
+  Optional explanation for the approval decision.
+</ParamField>
+
+<ParamField path="resolvedAt" type="number">
+  Timestamp when the approval was approved or denied.
+</ParamField>
+
+## Resolving Approvals
+
+Workspace admins can approve or deny pending approvals:
+
+```typescript
+// From executor.ts:46-58
+export const resolveApproval = workspaceMutation({
+  method: "POST",
+  requireAdmin: true,  // Only admins can resolve approvals
+  args: {
+    approvalId: v.string(),
+    decision: v.union(v.literal("approved"), v.literal("denied")),
+    reviewerId: v.optional(v.string()),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    return await resolveApprovalHandler(ctx, internal, args);
+  },
+});
+```
+
+### Resolution Logic
+
+```typescript
+// From approvals.ts:122-146
+export const resolveApproval = internalMutation({
+  handler: async (ctx, args) => {
+    const doc = await getApprovalDoc(ctx, args.approvalId);
+    
+    // Only pending approvals can be resolved
+    if (!doc || doc.status !== "pending") {
+      return null;
+    }
+
+    await ctx.db.patch(doc._id, {
+      status: args.decision,       // "approved" or "denied"
+      reason: args.reason,
+      reviewerId: args.reviewerId,
+      resolvedAt: now,
+    });
+  },
+});
+```
+
+<Warning>
+Only approvals with `status: "pending"` can be resolved. Once approved or denied, the decision is final and immutable.
+</Warning>
+
+## Listing Approvals
+
+Workspace queries enable fetching approvals for review:
+
+<Tabs>
+  <Tab title="All Approvals">
+    ```typescript
+    // From approvals.ts:54-78
+    export const listApprovals = internalQuery({
+      args: {
+        workspaceId: vv.id("workspaces"),
+        status: v.optional(approvalStatusValidator),
+      },
+      handler: async (ctx, args) => {
+        // Returns up to 500 approvals, ordered by creation time (newest first)
+        const docs = await ctx.db
+          .query("approvals")
+          .withIndex("by_workspace_created", (q) => 
+            q.eq("workspaceId", args.workspaceId)
+          )
+          .order("desc")
+          .take(500);
+        
+        return docs.map(mapApproval);
+      },
+    });
+    ```
+  </Tab>
+  
+  <Tab title="Pending Approvals">
+    ```typescript
+    // From approvals.ts:81-119
+    export const listPendingApprovals = internalQuery({
+      args: { workspaceId: vv.id("workspaces") },
+      handler: async (ctx, args) => {
+        const docs = await ctx.db
+          .query("approvals")
+          .withIndex("by_workspace_status_created", (q) =>
+            q.eq("workspaceId", args.workspaceId)
+             .eq("status", "pending")
+          )
+          .order("asc")  // Oldest first
+          .take(500);
+
+        // Also fetch associated task context
+        const tasks = await Promise.all(
+          docs.map((approval) => getTaskDoc(ctx, approval.taskId))
+        );
+        
+        // Returns approval + task metadata for context
+      },
+    });
+    ```
+    
+    <Info>
+    Pending approvals are returned oldest-first so reviewers can process them in FIFO order.
+    </Info>
+  </Tab>
+  
+  <Tab title="By Status">
+    ```typescript
+    // Filter by specific status
+    const approved = await listApprovals({
+      workspaceId,
+      status: "approved"
+    });
+    
+    const denied = await listApprovals({
+      workspaceId,
+      status: "denied"
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## Approval Policies
+
+Approvals are triggered by access policies that specify `approvalMode: "required"`:
+
+```typescript
+// Policy that requires approval for GitHub issue creation
+{
+  resourceType: "tool_path",
+  resourcePattern: "github/create_issue",
+  effect: "allow",
+  approvalMode: "required",  // Triggers approval workflow
+  priority: 100
+}
+```
+
+See [Policies](/features/policies) for complete details on approval modes.
+
+## Tool Call Integration
+
+When a tool call requires approval, a `toolCalls` record is created with status `"pending_approval"`:
+
+```typescript
+// From schema.ts:261-275
+toolCalls: defineTable({
+  taskId: v.string(),
+  callId: v.string(),
+  workspaceId: v.id("workspaces"),
+  toolPath: v.string(),
+  status: toolCallStatusValidator,  // "pending_approval" during approval
+  approvalId: v.optional(v.string()), // Links to approval record
+  error: v.optional(v.string()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+  completedAt: v.optional(v.number()),
+})
+```
+
+**Status Flow**:
+1. `"requested"` - Tool call initiated
+2. `"pending_approval"` - Waiting for approval resolution
+3. `"completed"` - Approved and executed successfully
+4. `"denied"` - Approval denied
+5. `"failed"` - Execution failed after approval
+
+## Schema Reference
+
+```typescript
+// From schema.ts:240-254
+approvals: defineTable({
+  approvalId: v.string(),              // domain ID: approval_<uuid>
+  taskId: v.string(),                  // references tasks.taskId
+  workspaceId: v.id("workspaces"),
+  toolPath: v.string(),
+  input: jsonObjectValidator,
+  status: approvalStatusValidator,     // "pending" | "approved" | "denied"
+  reason: v.optional(v.string()),
+  reviewerId: v.optional(v.string()),  // account._id or anon_<uuid>
+  createdAt: v.number(),
+  resolvedAt: v.optional(v.number()),
+})
+  .index("by_approval_id", ["approvalId"])
+  .index("by_workspace_created", ["workspaceId", "createdAt"])
+  .index("by_workspace_status_created", ["workspaceId", "status", "createdAt"])
+```
+
+**Access Patterns**:
+- Resolve by approval ID: `by_approval_id`
+- List by workspace: `by_workspace_created`
+- Filter by status: `by_workspace_status_created`
+
+## Dashboard Workflows
+
+In the Executor dashboard, workspace admins can:
+
+1. **View pending approvals** in the approvals queue
+2. **Inspect tool call details**: see the tool path and input arguments
+3. **Review task context**: see which task requested the approval
+4. **Approve or deny** with optional reason
+5. **Track approval history** for audit purposes
+
+<Info>
+Approval workflows are particularly useful for:
+- Production deployments and infrastructure changes
+- Data deletion or modification operations
+- External API calls that incur costs
+- Compliance and audit requirements
+</Info>
+
+## Best Practices
+
+### Policy Design
+
+- Use `approvalMode: "required"` for destructive operations
+- Use `approvalMode: "auto"` for safe, read-only operations
+- Combine with `argumentConditions` to require approval only for specific inputs
+
+### Reviewer Workflow
+
+- Review pending approvals regularly to avoid blocking tasks
+- Always provide a `reason` when denying to help task authors understand
+- Use the task context to understand the broader workflow
+
+### Task Handling
+
+- Design tasks to handle denied approvals gracefully
+- Implement fallback logic or error handling for denied tool calls
+- Log approval decisions for debugging and audit trails
+
+## Related Features
+
+- [Policies](/features/policies) - Configure approval modes and access rules
+- [Tasks](/features/tasks) - Task execution and lifecycle
+- [Tools](/features/tools) - Tool sources and discovery

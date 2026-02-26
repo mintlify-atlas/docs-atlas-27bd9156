@@ -1,0 +1,507 @@
+---
+title: Installation
+description: Install Executor via binary, from source, or use the hosted version
+---
+
+# Installation
+
+Executor supports three installation methods: binary install (recommended for local use), building from source (for development), and hosted SaaS (for production).
+
+## Binary Install (Recommended)
+
+The binary installer provides a self-contained Executor runtime with no global dependencies required.
+
+### One-Command Install
+
+```bash
+curl -fsSL https://executor.sh/install | bash
+```
+
+This installs:
+- `executor` CLI binary at `~/.executor/bin/executor`
+- Managed Convex local backend
+- Packaged web UI
+- Node runtime for web server
+- Background service management
+
+<Note>
+  The installer automatically adds `~/.executor/bin` to your shell PATH. Restart your terminal or run `source ~/.bashrc` (or `~/.zshrc`) to use the `executor` command.
+</Note>
+
+### What Gets Installed
+
+<AccordionGroup>
+  <Accordion title="Binary Location">
+    **Installed at**: `~/.executor/bin/executor`
+    
+    The CLI binary is compiled for your platform (Linux or macOS, x64 or ARM64) and requires no runtime dependencies.
+  </Accordion>
+  
+  <Accordion title="Runtime Directory">
+    **Location**: `~/.executor/runtime/`
+    
+    Contains:
+    - `convex-backend/`: Managed Convex local backend binary
+    - `web/`: Packaged Next.js web application
+    - `node-v*/`: Managed Node.js runtime
+    - `convex-data/`: Local SQLite database and file storage
+    - `services/`: PID files for background services
+    - `logs/`: Backend and web server logs
+  </Accordion>
+  
+  <Accordion title="Default Ports">
+    - **Backend API**: `5410`
+    - **Backend Site** (MCP endpoints): `5411`
+    - **Web UI**: `5312`
+    
+    Override with environment variables:
+    ```bash
+    export EXECUTOR_BACKEND_PORT=5410
+    export EXECUTOR_BACKEND_SITE_PORT=5411
+    export EXECUTOR_WEB_PORT=5312
+    ```
+  </Accordion>
+  
+  <Accordion title="Data Persistence">
+    Local data is stored in `~/.executor/runtime/convex-data/`:
+    - SQLite database files
+    - File storage for agent filesystem operations
+    - Anonymous session credentials
+    
+    <Warning>
+      This data is preserved across upgrades. Back up this directory before uninstalling.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+### Install Options
+
+<CodeGroup>
+```bash Specific Version
+curl -fsSL https://executor.sh/install | bash -s -- --version v1.2.3
+```
+
+```bash Skip PATH Modification
+curl -fsSL https://executor.sh/install | bash -s -- --no-modify-path
+```
+
+```bash Local Binary
+# Build first
+bun run --cwd executor build:binary
+
+# Install from local binary
+bash executor/install --binary executor/dist/executor
+```
+
+```bash Custom Install Directory
+export EXECUTOR_INSTALL_DIR="$HOME/bin"
+curl -fsSL https://executor.sh/install | bash
+```
+</CodeGroup>
+
+### Verify Installation
+
+Check that Executor is installed and services are healthy:
+
+```bash
+executor doctor
+```
+
+Expected output:
+```
+Executor status: ready
+Dashboard: http://127.0.0.1:5312 (running)
+Backend: running (http://127.0.0.1:5410)
+Functions: available
+MCP endpoint: http://127.0.0.1:5411/v1/mcp
+```
+
+<Tip>
+  Use `executor doctor --verbose` to see detailed runtime information including paths, versions, and configuration.
+</Tip>
+
+### Post-Install
+
+The installer automatically:
+1. Stops any existing Executor services
+2. Installs/updates the binary and runtime
+3. Starts the backend and web UI in the background
+4. Waits for services to become healthy
+
+Access the dashboard at **http://localhost:5312**
+
+## From Source
+
+Build and run Executor from the monorepo for development or to integrate with an existing Convex deployment.
+
+### Prerequisites
+
+<Steps>
+  <Step title="Install Bun">
+    Executor uses Bun as its runtime and package manager:
+    
+    ```bash
+    curl -fsSL https://bun.sh/install | bash
+    ```
+  </Step>
+  
+  <Step title="Convex Account">
+    Create a Convex account and project at [convex.dev](https://www.convex.dev).
+    
+    You'll need:
+    - Deployment URL (e.g., `https://happy-animal-123.convex.cloud`)
+    - Deployment name (e.g., `happy-animal-123`)
+  </Step>
+</Steps>
+
+### Clone and Install
+
+```bash
+# Clone the repository
+git clone https://github.com/RhysSullivan/executor.git
+cd executor
+
+# Install dependencies
+bun install
+```
+
+### Configure Environment
+
+<Steps>
+  <Step title="Copy environment template">
+    ```bash
+    cp .env.example .env
+    ```
+  </Step>
+  
+  <Step title="Set required variables">
+    Edit `.env` and set at minimum:
+    
+    ```bash .env
+    CONVEX_DEPLOYMENT=happy-animal-123
+    CONVEX_URL=https://happy-animal-123.convex.cloud
+    ```
+  </Step>
+  
+  <Step title="Optional: Configure services">
+    For full functionality, also configure:
+    
+    ```bash .env
+    # Storage (required for file operations in cloud deployments)
+    AGENT_STORAGE_PROVIDER=agentfs-cloudflare
+    CLOUDFLARE_SANDBOX_RUN_URL=https://your-worker.workers.dev
+    CLOUDFLARE_SANDBOX_AUTH_TOKEN=your-token
+    
+    # Authentication (for WorkOS-based auth)
+    WORKOS_CLIENT_ID=client_...
+    WORKOS_API_KEY=sk_...
+    WORKOS_COOKIE_PASSWORD=complex-secret-at-least-32-chars
+    
+    # Billing (for Stripe integration)
+    STRIPE_SECRET_KEY=sk_test_...
+    STRIPE_WEBHOOK_SECRET=whsec_...
+    STRIPE_PRICE_ID=price_...
+    ```
+  </Step>
+</Steps>
+
+### Run Development Services
+
+<Tabs>
+  <Tab title="Full Stack (Recommended)">
+    Start all services with a single command:
+    
+    ```bash
+    bun run dev
+    ```
+    
+    This starts:
+    - Convex dev watcher (functions hot reload)
+    - Web UI at `http://localhost:4312`
+    - MCP endpoints at `<CONVEX_SITE_URL>/mcp`
+    - Assistant server (if configured)
+    - Discord bot (if `DISCORD_BOT_TOKEN` is set)
+    
+    PIDs are tracked in `.dev.pids`. Stop all with:
+    ```bash
+    bun run kill:all
+    ```
+  </Tab>
+  
+  <Tab title="Executor Only">
+    Run just the Executor components (separate terminals):
+    
+    ```bash Terminal 1: Convex
+    bun run dev:executor:convex
+    ```
+    
+    ```bash Terminal 2: Web UI
+    bun run dev:executor:web
+    ```
+    
+    Web UI runs at `http://localhost:4312`
+  </Tab>
+  
+  <Tab title="Manual Services">
+    Run services individually:
+    
+    ```bash Convex Dev
+    cd executor/packages/convex
+    bunx convex dev
+    ```
+    
+    ```bash Web App
+    cd executor/apps/web
+    bun run dev
+    ```
+  </Tab>
+</Tabs>
+
+### Local Runtime vs Cloud
+
+<Note>
+  When running from source, you can use either a local Bun runtime or Cloudflare Workers.
+</Note>
+
+**Local Bun Runtime** (development only):
+```bash .env
+DANGEROUSLY_ALLOW_LOCAL_VM=1
+AGENT_STORAGE_PROVIDER=agentfs-local
+```
+
+**Cloudflare Workers** (production-ready):
+```bash .env
+# DANGEROUSLY_ALLOW_LOCAL_VM not set
+AGENT_STORAGE_PROVIDER=agentfs-cloudflare
+CLOUDFLARE_SANDBOX_RUN_URL=https://your-worker.workers.dev
+CLOUDFLARE_SANDBOX_AUTH_TOKEN=your-token
+```
+
+### Build Binary from Source
+
+Compile a native binary for distribution:
+
+```bash
+cd executor
+bun run build:binary
+```
+
+Output:
+- Binary: `executor/dist/executor`
+- Runtime bundle: `executor/dist/release/executor-runtime-{os}-{arch}.tar.gz`
+
+Install locally:
+```bash
+bash executor/install --binary executor/dist/executor --no-modify-path
+```
+
+## Hosted SaaS
+
+Use Executor without any installation at **executor.sh**.
+
+### Features
+
+<CardGroup cols={2}>
+  <Card title="Automatic Updates" icon="arrows-rotate">
+    Always on the latest version with zero maintenance
+  </Card>
+  <Card title="WorkOS Auth" icon="key">
+    Enterprise SSO and organization management
+  </Card>
+  <Card title="Managed Infrastructure" icon="server">
+    Scalable Convex backend and Cloudflare Workers
+  </Card>
+  <Card title="Stripe Billing" icon="credit-card">
+    Integrated usage-based billing
+  </Card>
+</CardGroup>
+
+### Getting Started
+
+<Steps>
+  <Step title="Sign up">
+    Visit [executor.sh](https://executor.sh) and create an account
+  </Step>
+  
+  <Step title="Create an organization">
+    Set up your organization and invite team members
+  </Step>
+  
+  <Step title="Configure workspace">
+    Add tool sources, credentials, and access policies
+  </Step>
+  
+  <Step title="Get MCP credentials">
+    Generate an API key for your MCP client from the dashboard
+  </Step>
+</Steps>
+
+### MCP Endpoint
+
+Hosted endpoint:
+```
+https://app.executor.sh/mcp
+```
+
+Authenticate with WorkOS OAuth or API key.
+
+## System Requirements
+
+### Binary Install
+
+<Tabs>
+  <Tab title="Linux">
+    - **OS**: Linux (glibc 2.31+)
+    - **Architecture**: x86_64 or ARM64
+    - **Disk**: 500 MB free space
+    - **RAM**: 512 MB minimum
+    - **Dependencies**: curl, tar, sha256sum or shasum
+  </Tab>
+  
+  <Tab title="macOS">
+    - **OS**: macOS 11+ (Big Sur or later)
+    - **Architecture**: x86_64 (Intel) or ARM64 (Apple Silicon)
+    - **Disk**: 500 MB free space
+    - **RAM**: 512 MB minimum
+    - **Dependencies**: curl, tar, shasum (built-in)
+  </Tab>
+</Tabs>
+
+### From Source
+
+- **Bun**: 1.0.0 or later
+- **Node.js**: 18+ (only for Next.js build)
+- **Git**: Any recent version
+- **Disk**: 2 GB for dependencies and builds
+- **RAM**: 2 GB minimum (4 GB recommended for development)
+
+## Upgrade
+
+Upgrade an existing binary installation:
+
+```bash
+executor upgrade
+```
+
+This:
+1. Downloads the latest installer
+2. Stops running services
+3. Upgrades binary and runtime
+4. Restarts services
+5. Preserves local data
+
+<Tip>
+  Use `executor upgrade --version v1.2.3` to install a specific version.
+</Tip>
+
+## Uninstall
+
+Remove Executor and all runtime files:
+
+```bash
+executor uninstall --yes
+```
+
+This removes:
+- `~/.executor/bin/executor`
+- `~/.executor/runtime/` (including local data)
+- Background services
+
+<Warning>
+  Uninstall does **not** remove the PATH entry from your shell rc file. Remove it manually:
+  
+  ```bash
+  # Remove this line from ~/.bashrc or ~/.zshrc
+  export PATH=$HOME/.executor/bin:$PATH
+  ```
+</Warning>
+
+## Troubleshooting
+
+### Services Not Starting
+
+**Check status**:
+```bash
+executor doctor --verbose
+```
+
+**View logs**:
+```bash
+tail -f ~/.executor/runtime/logs/backend.log
+tail -f ~/.executor/runtime/logs/web.log
+```
+
+**Restart services**:
+```bash
+executor down
+executor up
+executor web &
+```
+
+### Port Conflicts
+
+Change default ports if they're already in use:
+
+```bash
+export EXECUTOR_BACKEND_PORT=6410
+export EXECUTOR_BACKEND_SITE_PORT=6411
+export EXECUTOR_WEB_PORT=6312
+executor down
+executor up
+```
+
+### Binary Not Found
+
+If `executor` command is not found after install:
+
+```bash
+# Manually add to PATH (bash)
+echo 'export PATH=$HOME/.executor/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+
+# Or use full path
+~/.executor/bin/executor doctor
+```
+
+### Functions Not Available
+
+If `executor doctor` shows "Functions: unavailable":
+
+1. **Check backend logs**:
+   ```bash
+   cat ~/.executor/runtime/logs/backend.log
+   ```
+
+2. **Verify backend is running**:
+   ```bash
+   curl http://127.0.0.1:5410/version
+   ```
+
+3. **Restart and watch logs**:
+   ```bash
+   executor down
+   executor up  # runs in foreground
+   ```
+
+### Permission Denied
+
+If you get permission errors:
+
+```bash
+# Fix binary permissions
+chmod +x ~/.executor/bin/executor
+
+# Fix runtime directory permissions
+chmod -R u+rw ~/.executor/runtime
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Execute your first task
+  </Card>
+  <Card title="Configuration" icon="terminal" href="/deployment/configuration">
+    Environment variables and settings
+  </Card>
+</CardGroup>

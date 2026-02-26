@@ -1,0 +1,191 @@
+---
+title: HTTP Routes Overview
+description: Complete reference for all HTTP endpoints exposed by Executor
+---
+
+Executor exposes several categories of HTTP routes for OAuth discovery, authentication, webhooks, and MCP protocol handling.
+
+## Route Categories
+
+### OAuth Discovery Endpoints
+
+These endpoints support OAuth 2.0 Resource Server metadata discovery and anonymous authentication:
+
+- `/.well-known/oauth-protected-resource` - OAuth Protected Resource metadata
+- `/.well-known/oauth-authorization-server` - OAuth Authorization Server metadata (proxy)
+- `/.well-known/jwks.json` - JSON Web Key Set for anonymous tokens
+- `/auth/anonymous/token` - Anonymous authentication token issuance
+
+See [OAuth Endpoints](/api/oauth-endpoints) for details.
+
+### MCP Protocol Endpoints
+
+Model Context Protocol endpoints for authenticated and anonymous access:
+
+- `/v1/mcp` (POST, GET, DELETE) - Authenticated MCP endpoint
+- `/mcp` (POST, GET, DELETE) - Legacy authenticated MCP endpoint
+- `/v1/mcp/anonymous` (POST, GET, DELETE) - Anonymous MCP with API key auth
+- `/mcp/anonymous` (POST, GET, DELETE) - Legacy anonymous MCP endpoint
+
+All MCP endpoints require the `workspaceId` query parameter.
+
+### Webhook Endpoints
+
+Third-party service webhooks handled by Executor:
+
+- `/stripe/webhook` - Stripe payment webhooks
+- WorkOS AuthKit webhooks - Dynamically registered by `@convex-dev/workos-authkit`
+
+See [Webhooks](/api/webhooks) for details.
+
+## Authentication Methods
+
+### OAuth 2.0 Bearer Tokens
+
+MCP endpoints (`/v1/mcp`, `/mcp`) require OAuth 2.0 bearer tokens:
+
+```http
+Authorization: Bearer <token>
+```
+
+Tokens are verified against the configured authorization server (typically WorkOS AuthKit). The authorization server URL is configured via:
+
+- `MCP_AUTHORIZATION_SERVER`
+- `MCP_AUTHORIZATION_SERVER_URL`
+- `WORKOS_AUTHKIT_ISSUER`
+- `WORKOS_AUTHKIT_DOMAIN`
+
+### API Key Authentication
+
+Anonymous MCP endpoints (`/v1/mcp/anonymous`, `/mcp/anonymous`) use API key authentication:
+
+```http
+X-API-Key: <api-key>
+```
+
+Or via bearer token:
+
+```http
+Authorization: Bearer <api-key>
+```
+
+API keys must be generated for anonymous accounts and are workspace-scoped.
+
+### Anonymous JWT Tokens
+
+The `/auth/anonymous/token` endpoint issues short-lived JWT tokens for anonymous access:
+
+```json
+{
+  "tokenType": "Bearer",
+  "accessToken": "eyJ...",
+  "accountId": "anon_abc123...",
+  "expiresAtMs": 1234567890000
+}
+```
+
+Tokens are signed with ES256 and include:
+- `iss` - Issuer (deployment URL)
+- `sub` - Anonymous account ID
+- `aud` - Audience (always `executor-anonymous`)
+- `provider` - Always `"anonymous"`
+
+## Rate Limiting
+
+All HTTP endpoints enforce rate limiting based on IP address and user agent:
+
+<ParamField path="mcp" type="token bucket">
+  MCP endpoints: 120 requests per minute (capacity: 120)
+</ParamField>
+
+<ParamField path="anonymousToken" type="token bucket">
+  Anonymous token endpoint: 30 requests per minute (capacity: 30)
+</ParamField>
+
+<ParamField path="anonymousSessionBootstrapGlobal" type="fixed window">
+  Global bootstrap: 180 requests per minute (capacity: 180)
+</ParamField>
+
+<ParamField path="anonymousSessionBootstrapByKey" type="token bucket">
+  Per-key bootstrap: 24 requests per minute (capacity: 24)
+</ParamField>
+
+Rate-limited responses return:
+
+```json
+{
+  "error": "Rate limit exceeded"
+}
+```
+
+With HTTP status `429` and a `Retry-After` header (in seconds).
+
+## Error Responses
+
+### 401 Unauthorized
+
+Returned when authentication is required but not provided or invalid:
+
+```json
+{
+  "error": "No valid bearer token provided."
+}
+```
+
+For OAuth-protected resources, includes a `WWW-Authenticate` header:
+
+```http
+WWW-Authenticate: Bearer error="unauthorized", error_description="Authorization needed", resource_metadata="https://..."
+```
+
+### 403 Forbidden
+
+Returned when authentication succeeds but authorization fails:
+
+```json
+{
+  "error": "API key does not match requested workspace"
+}
+```
+
+### 404 Not Found
+
+Returned when OAuth is not configured in self-hosted deployments:
+
+```json
+{
+  "error": "MCP OAuth is not configured"
+}
+```
+
+### 429 Too Many Requests
+
+Returned when rate limits are exceeded:
+
+```json
+{
+  "error": "Rate limit exceeded"
+}
+```
+
+### 503 Service Unavailable
+
+Returned when required configuration is missing in cloud deployments:
+
+```json
+{
+  "error": "MCP OAuth must be configured for cloud deployments"
+}
+```
+
+## Source Files
+
+HTTP routes are defined in:
+
+- `executor/packages/database/convex/http.ts:12-38` - Route registration
+- `executor/packages/database/convex/http/oauth_handlers.ts` - OAuth discovery
+- `executor/packages/database/convex/http/anonymous_auth.ts` - Anonymous auth
+- `executor/packages/database/convex/http/mcp_handler.ts` - MCP protocol
+- `executor/packages/database/convex/http/mcp_auth.ts` - MCP authentication
+- `executor/packages/database/convex/http/rate_limit.ts` - Rate limiting
+- `executor/packages/database/convex/auth.ts` - WorkOS AuthKit integration

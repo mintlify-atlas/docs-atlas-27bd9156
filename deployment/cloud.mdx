@@ -1,0 +1,385 @@
+---
+title: Cloud Deployment
+description: Deploy Executor to hosted Convex for production workloads
+---
+
+Executor can be deployed to hosted Convex for production use, providing a fully managed control plane with global availability and automatic scaling.
+
+## Prerequisites
+
+<Steps>
+  <Step title="Convex Account">
+    Create a Convex account at [convex.dev](https://convex.dev) if you don't have one.
+  </Step>
+
+  <Step title="Install Convex CLI">
+    ```bash
+    npm install -g convex
+    ```
+  </Step>
+
+  <Step title="Clone Repository">
+    ```bash
+    git clone https://github.com/RhysSullivan/executor.git
+    cd executor/executor
+    ```
+  </Step>
+</Steps>
+
+## Deployment Process
+
+<Steps>
+  <Step title="Initialize Convex Project">
+    From the `executor/` directory:
+    
+    ```bash
+    bunx convex dev
+    ```
+    
+    This will:
+    - Create a new Convex deployment
+    - Generate deployment credentials
+    - Start watching for code changes
+  </Step>
+
+  <Step title="Configure Environment">
+    Copy the environment template:
+    
+    ```bash
+    cp ../.env.example .env
+    ```
+    
+    Set required variables:
+    
+    ```bash .env
+    # Convex deployment (from convex dev output)
+    CONVEX_DEPLOYMENT=dev:your-deployment-slug
+    CONVEX_URL=https://your-deployment.convex.cloud
+    CONVEX_SITE_URL=https://your-deployment.convex.site
+    
+    # Deployment mode for cloud
+    EXECUTOR_DEPLOYMENT_MODE=cloud
+    
+    # Use Cloudflare storage (required for cloud)
+    AGENT_STORAGE_PROVIDER=agentfs-cloudflare
+    ```
+  </Step>
+
+  <Step title="Deploy Functions">
+    Deploy to production:
+    
+    ```bash
+    bun run deploy
+    ```
+    
+    This runs `convex deploy` and pushes all backend functions to Convex.
+  </Step>
+
+  <Step title="Deploy Web UI">
+    Build and deploy the Next.js web UI to your hosting platform:
+    
+    ```bash
+    cd apps/web
+    bun run build
+    ```
+    
+    Deploy the `.next` build to Vercel, Netlify, or your hosting provider.
+  </Step>
+</Steps>
+
+## Deployment Modes
+
+Executor uses `EXECUTOR_DEPLOYMENT_MODE` to control security and storage behavior:
+
+<CodeGroup>
+```bash Self-Hosted
+# Default mode for local/single-host deployments
+# Allows local storage primitives
+EXECUTOR_DEPLOYMENT_MODE=self-hosted
+AGENT_STORAGE_PROVIDER=agentfs-local
+```
+
+```bash Cloud
+# Required for hosted Convex deployments
+# Enforces managed credential storage
+EXECUTOR_DEPLOYMENT_MODE=cloud
+AGENT_STORAGE_PROVIDER=agentfs-cloudflare
+```
+</CodeGroup>
+
+<Warning>
+  Using `agentfs-local` in cloud deployments will fail because local filesystem state is not shared across Convex workers. Always use `agentfs-cloudflare` for production cloud deployments.
+</Warning>
+
+## Runtime Configuration
+
+### Execution Mode
+
+Control where code executes:
+
+```bash
+# Allow local Bun VM execution (self-hosted only)
+DANGEROUSLY_ALLOW_LOCAL_VM=1
+
+# Production: use Cloudflare runtime (default when unset)
+# Leave DANGEROUSLY_ALLOW_LOCAL_VM unset
+```
+
+<Note>
+  In production cloud deployments, leave `DANGEROUSLY_ALLOW_LOCAL_VM` unset to enforce Cloudflare Worker sandbox execution for security.
+</Note>
+
+### OpenAPI Generator
+
+For heavy OpenAPI parsing, configure an external generator endpoint:
+
+```bash
+# Optional external generator for Convex
+EXECUTOR_GENERATE_URL=http://localhost:4312
+```
+
+This endpoint expects:
+```
+GET /api/generate?specUrl=...&sourceName=...&includeDts=0|1
+```
+
+## Authentication Setup
+
+### WorkOS (Recommended)
+
+Enable organization-based authentication with WorkOS:
+
+<Steps>
+  <Step title="Create WorkOS Application">
+    Sign up at [workos.com](https://workos.com) and create an application.
+  </Step>
+
+  <Step title="Configure Environment">
+    ```bash .env
+    WORKOS_CLIENT_ID=client_...
+    WORKOS_API_KEY=sk_test_...
+    WORKOS_COOKIE_PASSWORD=<32+ char random string>
+    WORKOS_WEBHOOK_SECRET=...
+    ```
+    
+    Generate a secure cookie password:
+    ```bash
+    openssl rand -base64 32
+    ```
+  </Step>
+
+  <Step title="Set MCP Authorization">
+    Configure OAuth for the MCP endpoint:
+    
+    ```bash
+    MCP_AUTHORIZATION_SERVER=https://your-authkit-domain.authkit.app
+    ```
+  </Step>
+</Steps>
+
+### Anonymous Mode
+
+For development or single-user deployments, use anonymous JWT auth:
+
+```bash
+# Generate ES256 key pair
+openssl ecparam -name prime256v1 -genkey -noout -out private.pem
+openssl ec -in private.pem -pubout -out public.pem
+
+# Convert to single-line PEM format
+export ANONYMOUS_AUTH_PRIVATE_KEY_PEM=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' private.pem)
+export ANONYMOUS_AUTH_PUBLIC_KEY_PEM=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' public.pem)
+
+# API key signing secret
+export MCP_API_KEY_SECRET=change-me
+```
+
+Add to your `.env` or Convex environment variables.
+
+## Billing Integration
+
+### Stripe Setup
+
+Enable checkout and billing portal with Stripe:
+
+```bash .env
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_PRICE_ID=price_...
+
+# Redirect URLs
+BILLING_SUCCESS_URL=https://your-domain.com/organization?tab=billing&success=true
+BILLING_CANCEL_URL=https://your-domain.com/organization?tab=billing&canceled=true
+BILLING_RETURN_URL=https://your-domain.com/organization?tab=billing
+```
+
+<Note>
+  Stripe is optional. Omit these variables to disable billing features.
+</Note>
+
+## Storage Providers
+
+### Cloudflare Storage (Cloud)
+
+Required for hosted Convex deployments:
+
+```bash
+AGENT_STORAGE_PROVIDER=agentfs-cloudflare
+
+# Cloudflare Durable Objects proxy (served by runner-sandbox-host)
+CLOUDFLARE_SANDBOX_RUN_URL=https://your-worker.workers.dev
+CLOUDFLARE_SANDBOX_AUTH_TOKEN=your-auth-token
+```
+
+### Local Storage (Self-Hosted Only)
+
+```bash
+AGENT_STORAGE_PROVIDER=agentfs-local
+AGENT_STORAGE_ROOT=/tmp/executor-agentfs
+
+# Optional: disable metadata writes for read-only access
+AGENT_STORAGE_TOUCH_ON_READ=false
+```
+
+<Warning>
+  `agentfs-local` is only supported for self-hosted/single-host deployments. Do not use in cloud.
+</Warning>
+
+## MCP Endpoints
+
+Cloud deployments expose MCP at:
+
+```
+https://your-deployment.convex.site/mcp
+https://your-deployment.convex.site/mcp/anonymous
+```
+
+### OAuth Protected Endpoint
+
+`/mcp` requires bearer token verification when `MCP_AUTHORIZATION_SERVER` is configured:
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  https://your-deployment.convex.site/mcp
+```
+
+### Anonymous Endpoint
+
+`/mcp/anonymous` uses API key authentication:
+
+```bash
+curl -H "x-api-key: <api-key>" \
+  https://your-deployment.convex.site/mcp/anonymous?workspaceId=...
+```
+
+Alternatively, pass as Authorization header:
+
+```bash
+curl -H "Authorization: Bearer <api-key>" \
+  https://your-deployment.convex.site/mcp/anonymous?workspaceId=...
+```
+
+## Environment Variables in Convex
+
+Convex uses environment variables set in your dashboard:
+
+<Steps>
+  <Step title="Open Convex Dashboard">
+    Navigate to your deployment at [dashboard.convex.dev](https://dashboard.convex.dev)
+  </Step>
+
+  <Step title="Set Environment Variables">
+    Go to Settings → Environment Variables and add:
+    
+    - `EXECUTOR_DEPLOYMENT_MODE=cloud`
+    - `AGENT_STORAGE_PROVIDER=agentfs-cloudflare`
+    - Auth credentials (WorkOS or anonymous JWT keys)
+    - Optional: Stripe keys for billing
+  </Step>
+
+  <Step title="Redeploy">
+    ```bash
+    bun run deploy
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Convex environment variables are separate from your local `.env` file. Set them in the dashboard for production.
+</Note>
+
+## Production Checklist
+
+<Steps>
+  <Step title="Security">
+    - [ ] Set `EXECUTOR_DEPLOYMENT_MODE=cloud`
+    - [ ] Use `agentfs-cloudflare` storage
+    - [ ] Leave `DANGEROUSLY_ALLOW_LOCAL_VM` unset
+    - [ ] Configure WorkOS or anonymous JWT auth
+    - [ ] Set secure cookie password (32+ chars)
+  </Step>
+
+  <Step title="Infrastructure">
+    - [ ] Deploy Convex functions with `bun run deploy`
+    - [ ] Deploy web UI to hosting platform
+    - [ ] Configure custom domain
+    - [ ] Set up SSL/TLS certificates
+  </Step>
+
+  <Step title="Monitoring">
+    - [ ] Enable Convex logs in dashboard
+    - [ ] Set up error tracking (Sentry, etc.)
+    - [ ] Configure uptime monitoring
+  </Step>
+
+  <Step title="Optional Features">
+    - [ ] Configure Stripe for billing
+    - [ ] Set up external OpenAPI generator
+    - [ ] Configure credential vault (WorkOS Vault)
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="401 on /mcp endpoint">
+    Verify bearer token issuer matches `MCP_AUTHORIZATION_SERVER`:
+    
+    ```bash
+    # Check JWT issuer
+    echo $TOKEN | jwt decode -
+    ```
+  </Accordion>
+
+  <Accordion title="401 on /mcp/anonymous">
+    Pass API key from workspace settings:
+    
+    ```bash
+    curl -H "x-api-key: $API_KEY" \
+      https://your-deployment.convex.site/mcp/anonymous?workspaceId=...
+    ```
+  </Accordion>
+
+  <Accordion title="ENOENT after fs.write">
+    You're using `agentfs-local` in cloud. Switch to `agentfs-cloudflare`:
+    
+    ```bash
+    AGENT_STORAGE_PROVIDER=agentfs-cloudflare
+    ```
+  </Accordion>
+
+  <Accordion title="Web UI can't load data">
+    Verify `CONVEX_URL` and `CONVEX_SITE_URL` in web UI environment variables match your deployment.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/deployment/configuration">
+    Complete environment variable reference
+  </Card>
+  <Card title="Self-Hosting" icon="server" href="/deployment/self-hosting">
+    Deploy locally with the binary CLI
+  </Card>
+</CardGroup>

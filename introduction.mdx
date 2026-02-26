@@ -1,0 +1,255 @@
+---
+title: Introduction to Executor
+description: A Convex-native execution platform for MCP-driven agents
+---
+
+# Introduction to Executor
+
+Executor is a Convex-native execution platform for MCP-driven agents that provides secure task execution, approval workflows, and comprehensive workspace management.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get up and running with Executor in minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Install Executor via binary or build from source
+  </Card>
+  <Card title="Deploy Self-Hosted" icon="terminal" href="/deployment/self-hosting">
+    Run Executor with the binary CLI
+  </Card>
+  <Card title="MCP Integration" icon="sitemap" href="/integrations/mcp">
+    Connect agents via MCP protocol
+  </Card>
+</CardGroup>
+
+## What is Executor?
+
+Executor enables AI agents to execute code safely and efficiently with built-in approval gates, workspace-scoped policies, and comprehensive tool management. It bridges the gap between AI capabilities and secure code execution.
+
+### Key Features
+
+<CardGroup cols={2}>
+  <Card title="Task Execution" icon="play">
+    Execute TypeScript code in a secure sandbox with tool invocation support
+  </Card>
+  <Card title="Approval Workflows" icon="shield-check">
+    Configurable approval gates for sensitive operations with workspace-level policies
+  </Card>
+  <Card title="MCP Endpoints" icon="plug">
+    Native MCP protocol support for seamless agent integration
+  </Card>
+  <Card title="Tool Discovery" icon="magnifying-glass">
+    Automatic tool discovery from MCP, OpenAPI, and GraphQL sources
+  </Card>
+  <Card title="Workspace Management" icon="users">
+    Multi-tenant workspaces with member roles and access controls
+  </Card>
+  <Card title="Self-Hosted & Cloud" icon="cloud">
+    Deploy as SaaS or run locally with the binary CLI
+  </Card>
+</CardGroup>
+
+## Core Components
+
+### Task Execution Engine
+
+Executor runs TypeScript code in a secure Cloudflare Worker sandbox with full tool access. Tasks can invoke tools, request approvals, and stream output in real-time.
+
+```typescript
+// Example: Execute code via MCP
+const result = await execute({
+  code: `
+    const response = await fetch('https://api.example.com/data');
+    const data = await response.json();
+    return data;
+  `,
+  workspace: 'my-workspace'
+});
+```
+
+### Approval System
+
+Tool policies control execution flow:
+- **Auto-allow**: Execute immediately without approval
+- **Require approval**: Pause execution until approved by workspace admin
+- **Deny**: Block execution of sensitive operations
+
+### MCP Integration
+
+Executor provides MCP endpoints for agent integration:
+
+<CodeGroup>
+```bash Authenticated MCP
+# OAuth-protected endpoint
+https://your-deployment.convex.site/mcp
+```
+
+```bash Anonymous MCP
+# API key authentication
+https://your-deployment.convex.site/mcp/anonymous?workspaceId=<id>
+```
+</CodeGroup>
+
+## Deployment Options
+
+<Tabs>
+  <Tab title="Binary Install (Recommended)">
+    One-command installation with managed runtime:
+    
+    ```bash
+    curl -fsSL https://executor.sh/install | bash
+    ```
+    
+    Includes:
+    - Self-contained binary with no global dependencies
+    - Managed Convex local backend
+    - Packaged web UI
+    - Background service management
+  </Tab>
+  
+  <Tab title="From Source">
+    Build and run from the monorepo:
+    
+    ```bash
+    git clone https://github.com/RhysSullivan/executor
+    cd executor
+    bun install
+    cp .env.example .env
+    # Configure CONVEX_URL and CONVEX_DEPLOYMENT
+    bun run dev
+    ```
+    
+    Ideal for:
+    - Development and contributions
+    - Custom modifications
+    - Integration with existing Convex deployments
+  </Tab>
+  
+  <Tab title="Cloud (SaaS)">
+    Use the hosted version at executor.sh:
+    
+    - No installation required
+    - Automatic updates
+    - Managed infrastructure
+    - WorkOS authentication
+    - Stripe billing integration
+  </Tab>
+</Tabs>
+
+## Architecture Overview
+
+### Control Plane (Convex)
+
+Convex functions manage:
+- **Tasks**: Queued, running, and completed execution records
+- **Approvals**: Pending approval requests and audit logs
+- **Policies**: Workspace-scoped tool access rules
+- **Credentials**: Encrypted secrets for tool authentication
+- **Organizations**: Multi-tenant workspace hierarchy
+
+### Execution Runtime
+
+Two runtime adapters:
+- **Cloudflare Worker**: Production sandbox (default for hosted deployments)
+- **Local Bun**: Development runtime (requires `DANGEROUSLY_ALLOW_LOCAL_VM=1`)
+
+### Web Application
+
+Next.js dashboard for:
+- Task monitoring and logs
+- Approval management
+- Tool source configuration
+- Workspace settings
+- Member management
+- Billing (when Stripe is configured)
+
+<Note>
+  The web UI runs on port **5312** by default for binary installs and **4312** for source development.
+</Note>
+
+## Use Cases
+
+### AI Agent Execution
+
+Enable AI agents like Claude Code to execute arbitrary TypeScript with safety controls:
+
+```bash
+executor claude -- "analyze the codebase and fix type errors"
+```
+
+### CI/CD Integration
+
+Run tasks as part of continuous integration pipelines with approval gates for deployments.
+
+### API Workflow Automation
+
+Combine multiple API calls with business logic in a single executable task:
+
+```typescript
+// Fetch from multiple sources and aggregate
+const users = await fetch('/api/users');
+const orders = await fetch('/api/orders');
+return aggregateData(users, orders);
+```
+
+### Self-Service Tooling
+
+Provide non-technical team members with safe access to data operations via approval workflows.
+
+## Security Model
+
+<Warning>
+  Executor executes untrusted code. Always review approval requests carefully and configure tool policies appropriately.
+</Warning>
+
+### Sandbox Isolation
+
+Code runs in isolated Cloudflare Worker environments with:
+- No filesystem access
+- No network access except via approved tools
+- Limited CPU and memory
+- Automatic timeout enforcement
+
+### Authentication & Authorization
+
+- **WorkOS**: Enterprise SSO for hosted deployments
+- **Anonymous sessions**: Temporary workspaces for local/development use
+- **API keys**: Scoped credentials for MCP clients
+- **RBAC**: Workspace admins and members with distinct permissions
+
+### Credential Management
+
+Two storage backends:
+- **Managed**: Encrypted storage in Convex
+- **WorkOS Vault**: External encrypted credential storage
+
+## Next Steps
+
+<Steps>
+  <Step title="Install Executor">
+    Follow the [installation guide](/installation) to set up Executor locally or via binary.
+  </Step>
+  
+  <Step title="Complete the Quick Start">
+    Execute your first task with the [quick start guide](/quickstart).
+  </Step>
+  
+  <Step title="Configure Your Workspace">
+    Set up tool sources, policies, and team members in the dashboard.
+  </Step>
+  
+  <Step title="Integrate with Your Agent">
+    Connect your AI agent to Executor's MCP endpoints.
+  </Step>
+</Steps>
+
+## Getting Help
+
+<CardGroup cols={2}>
+  <Card title="GitHub" icon="github" href="https://github.com/RhysSullivan/executor">
+    Report issues and contribute
+  </Card>
+  <Card title="Discord" icon="discord" href="https://discord.gg/executor">
+    Join the community
+  </Card>
+</CardGroup>

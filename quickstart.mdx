@@ -1,80 +1,529 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Execute your first task with Executor in 5 minutes
 ---
 
-## Get started in three steps
+# Quick Start
 
-Get your documentation site running locally and make your first customization.
+This guide walks you through installing Executor and running your first task execution.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Check>
+  You'll need a terminal with `curl` and `bash` available. Works on Linux and macOS.
+</Check>
 
-### Step 2: Deploy your changes
+## Step 1: Install Executor
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+Install the Executor binary with one command:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+```bash
+curl -fsSL https://executor.sh/install | bash
+```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+The installer will:
+1. Download the executor binary for your platform
+2. Install the managed runtime (Convex backend + web UI)
+3. Start services in the background
+4. Add executor to your PATH
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  The install takes 30-60 seconds. Grab some coffee while it sets up!
 </Note>
+
+### Verify Installation
+
+Restart your terminal or source your shell rc:
+
+```bash
+source ~/.bashrc  # or ~/.zshrc for zsh users
+```
+
+Check that Executor is healthy:
+
+```bash
+executor doctor
+```
+
+You should see:
+```
+Executor status: ready
+Dashboard: http://127.0.0.1:5312 (running)
+Backend: running (http://127.0.0.1:5410)
+Functions: available
+MCP endpoint: http://127.0.0.1:5411/v1/mcp
+```
+
+<Warning>
+  If services aren't running, try `executor up` to start the backend manually.
+</Warning>
+
+## Step 2: Open the Dashboard
+
+Open the web UI in your browser:
+
+```bash
+open http://localhost:5312
+```
+
+Or navigate to **http://localhost:5312** manually.
+
+The dashboard shows:
+- **Tasks**: Recent and running task executions
+- **Approvals**: Pending approval requests
+- **Tools**: Configured tool sources and available tools
+- **Settings**: Workspace configuration
+
+<Tip>
+  On first launch, Executor creates an anonymous workspace. This workspace is tied to your local installation and persists across restarts.
+</Tip>
+
+## Step 3: Execute Your First Task
+
+Let's run a simple task using Claude Code (or any MCP client).
+
+### Option A: Using Claude Code
+
+If you have [Claude Code](https://claude.ai/download) installed:
+
+```bash
+executor claude -- "write a simple hello world script"
+```
+
+This command:
+1. Bootstraps an anonymous MCP session
+2. Generates temporary API credentials
+3. Starts Claude Code with Executor's MCP endpoint pre-configured
+4. Disables Claude's native Bash tool (use `--allow-bash` to keep it)
+
+<Accordion title="What does 'executor claude' do?">
+  The `executor claude` command is a convenience wrapper that:
+  
+  1. Checks if Claude Code CLI is installed
+  2. Ensures the managed backend is running
+  3. Creates an anonymous workspace session (or reuses existing)
+  4. Generates an MCP API key
+  5. Writes a temporary MCP config at `/tmp/executor-claude-*/mcp.json`
+  6. Launches Claude Code with:
+     - `--mcp-config` pointing to the temp config
+     - `--strict-mcp-config` to prevent config conflicts
+     - `--append-system-prompt` with Executor-specific guidance
+     - `--disallowedTools Bash` (unless `--allow-bash` is passed)
+  
+  The temporary config looks like:
+  ```json
+  {
+    "mcpServers": {
+      "executor": {
+        "type": "http",
+        "url": "http://127.0.0.1:5411/v1/mcp/anonymous?workspaceId=...",
+        "headers": {
+          "x-api-key": "ek_..."
+        }
+      }
+    }
+  }
+  ```
+</Accordion>
+
+Claude will use Executor's `execute` tool to run code:
+
+<CodeGroup>
+```typescript Claude's execution
+// Claude sends this to executor via MCP
+const greeting = "Hello, World!";
+console.log(greeting);
+return { message: greeting };
+```
+
+```bash Output
+Hello, World!
+```
+</CodeGroup>
+
+### Option B: Manual MCP Configuration
+
+For other MCP clients, configure manually:
+
+<Steps>
+  <Step title="Get your MCP credentials">
+    Run this to bootstrap an anonymous session and get credentials:
+    
+    ```bash
+    executor doctor --verbose
+    ```
+    
+    Note the **MCP endpoint** URL.
+  </Step>
+  
+  <Step title="Configure your MCP client">
+    Add Executor as an MCP server in your client's config:
+    
+    ```json mcp.json
+    {
+      "mcpServers": {
+        "executor": {
+          "type": "http",
+          "url": "http://127.0.0.1:5411/v1/mcp/anonymous?workspaceId=<your-workspace-id>",
+          "headers": {
+            "x-api-key": "<your-api-key>"
+          }
+        }
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Use the execute tool">
+    Call the `execute` tool from your agent:
+    
+    ```typescript
+    // Tool call parameters
+    {
+      "code": "return 'Hello from Executor!';",
+      "description": "Test execution"
+    }
+    ```
+  </Step>
+</Steps>
+
+### Option C: API Direct Call
+
+You can also call the MCP endpoint directly via HTTP:
+
+```bash
+curl -X POST http://127.0.0.1:5411/v1/mcp/anonymous?workspaceId=<workspace-id> \
+  -H "x-api-key: <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "execute",
+      "arguments": {
+        "code": "console.log('Hello!'); return { success: true };",
+        "description": "Test task"
+      }
+    },
+    "id": 1
+  }'
+```
+
+## Step 4: View Task in Dashboard
+
+Switch to your browser and refresh the dashboard.
+
+You should see your task execution:
+- **Status**: Completed (green) or Running (blue)
+- **Code**: The TypeScript that was executed
+- **Output**: Console logs and return value
+- **Duration**: How long the task took
+
+<Frame>
+  <img src="/images/task-detail.png" alt="Task execution detail" />
+</Frame>
+
+## Step 5: Try Tool Invocation
+
+Now let's execute code that calls external tools.
+
+### Add a Tool Source
+
+<Steps>
+  <Step title="Go to Tools page">
+    Click **Tools** in the dashboard sidebar
+  </Step>
+  
+  <Step title="Add a tool source">
+    Click **Add Tool Source** and enter:
+    - **Type**: `openapi`
+    - **URL**: `https://api.github.com/openapi.json`
+    - **Name**: `github-api`
+  </Step>
+  
+  <Step title="Save and sync">
+    Click **Save**. Executor will fetch and parse the OpenAPI spec, creating tools for each endpoint.
+  </Step>
+</Steps>
+
+<Note>
+  Tool discovery happens asynchronously. Refresh the page after a few seconds to see discovered tools.
+</Note>
+
+### Execute Code Using Tools
+
+Now use Claude Code to call GitHub API:
+
+```bash
+executor claude -- "use the github api to fetch my user profile"
+```
+
+Claude will:
+1. Discover the `github__get_user` tool (auto-generated from OpenAPI)
+2. Execute code that invokes the tool:
+
+```typescript
+// Claude generates something like:
+const profile = await tools.github__get_user({
+  username: 'your-username'
+});
+
+return profile;
+```
+
+3. Executor runs the code, intercepts the tool call, and executes it
+4. Returns the API response to your code
+
+## Step 6: Set Up Approval Workflows
+
+For sensitive operations, you can require manual approval.
+
+### Create an Approval Policy
+
+<Steps>
+  <Step title="Go to Tools">
+    Open the Tools page in the dashboard
+  </Step>
+  
+  <Step title="Find a tool">
+    Locate a sensitive tool (e.g., `github__delete_repo`)
+  </Step>
+  
+  <Step title="Set policy">
+    Click the tool and set policy to **Require Approval**
+  </Step>
+</Steps>
+
+### Trigger an Approval
+
+Run code that uses the restricted tool:
+
+```bash
+executor claude -- "delete the test repository"
+```
+
+The task will:
+1. Start executing
+2. Pause when it reaches the `github__delete_repo` tool call
+3. Create an approval request
+
+### Review and Approve
+
+<Steps>
+  <Step title="Check Approvals page">
+    Click **Approvals** in the dashboard
+  </Step>
+  
+  <Step title="Review the request">
+    See:
+    - What tool is being called
+    - What arguments are being passed
+    - The full task code and context
+  </Step>
+  
+  <Step title="Approve or Deny">
+    Click **Approve** to allow execution, or **Deny** to cancel
+  </Step>
+</Steps>
+
+The task resumes immediately after approval and completes.
+
+<Tip>
+  Set tools to **Deny** to completely block them, or **Auto-allow** to skip approval gates.
+</Tip>
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card title="Task Execution" icon="terminal" href="/features/tasks">
+    Learn about task lifecycle and management
+  </Card>
+  <Card title="Tool Sources" icon="puzzle-piece" href="/features/tools">
+    Add MCP servers, OpenAPI specs, and GraphQL schemas
+  </Card>
+  <Card title="Access Policies" icon="shield" href="/features/policies">
+    Configure fine-grained approval rules
+  </Card>
+  <Card title="Credentials" icon="key" href="/features/credentials">
+    Store API keys and secrets for tools
+  </Card>
+</CardGroup>
+
+## Common Tasks
+
+### Stop Services
+
+Stop the background backend and web UI:
+
+```bash
+executor down
+```
+
+### Restart Services
+
+Restart if services crashed or you changed config:
+
+```bash
+executor down
+executor up &
+executor web &
+```
+
+### View Logs
+
+Tail service logs:
+
+```bash
+# Backend logs
+tail -f ~/.executor/runtime/logs/backend.log
+
+# Web UI logs
+tail -f ~/.executor/runtime/logs/web.log
+```
+
+### Upgrade Executor
+
+Update to the latest version:
+
+```bash
+executor upgrade
+```
+
+### Check Health
+
+Run diagnostics:
+
+```bash
+executor doctor --verbose
+```
+
+## Troubleshooting
+
+### Claude Command Not Found
+
+If `executor claude` says Claude is not installed:
+
+```bash
+# Install Claude Code CLI
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+### Services Not Running
+
+If `executor doctor` shows services aren't running:
+
+```bash
+# Start backend
+executor up
+
+# Start web in another terminal
+executor web
+```
+
+### Port Already in Use
+
+Change ports if defaults conflict:
+
+```bash
+export EXECUTOR_BACKEND_PORT=6410
+export EXECUTOR_WEB_PORT=6312
+executor down
+executor up
+```
+
+### Task Execution Failed
+
+Check the task detail in the dashboard for:
+- **Error messages** in output
+- **Tool call failures** (auth errors, rate limits)
+- **Timeout issues** (increase with `timeoutMs` parameter)
+
+### Can't Access Dashboard
+
+If web UI doesn't load:
+
+1. **Check web service is running**:
+   ```bash
+   curl http://127.0.0.1:5312
+   ```
+
+2. **Check logs**:
+   ```bash
+   cat ~/.executor/runtime/logs/web.log
+   ```
+
+3. **Restart web UI**:
+   ```bash
+   executor web
+   ```
+
+## Tips and Tricks
+
+<AccordionGroup>
+  <Accordion title="Use --allow-bash for system commands">
+    Keep Claude's Bash tool enabled while using Executor:
+    
+    ```bash
+    executor claude --allow-bash -- "list files and analyze them"
+    ```
+    
+    Claude can now use both Bash and Executor's execute tool.
+  </Accordion>
+  
+  <Accordion title="Pass arguments to Claude">
+    Pass any Claude Code flags after `--`:
+    
+    ```bash
+    executor claude -- --model sonnet "write a parser"
+    ```
+  </Accordion>
+  
+  <Accordion title="Run backend in foreground for debugging">
+    See real-time backend logs:
+    
+    ```bash
+    executor up  # runs in foreground, Ctrl+C to stop
+    ```
+  </Accordion>
+  
+  <Accordion title="Preserve data across reinstalls">
+    Your workspace data lives in `~/.executor/runtime/convex-data/`.
+    
+    Back it up before uninstalling:
+    ```bash
+    cp -r ~/.executor/runtime/convex-data ~/executor-backup
+    ```
+  </Accordion>
+  
+  <Accordion title="Use multiple workspaces">
+    The binary install creates one anonymous workspace by default.
+    
+    For multiple workspaces, use the hosted version at executor.sh or run from source with multiple Convex deployments.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+You now have Executor running and executing tasks! Here's what to explore next:
+
+<Steps>
+  <Step title="Configure tool sources">
+    Add MCP servers, OpenAPI specs, and GraphQL schemas to expand available tools.
+  </Step>
+  
+  <Step title="Set up credentials">
+    Store API keys and authentication secrets for tools that need them.
+  </Step>
+  
+  <Step title="Invite team members">
+    Add collaborators to your workspace (hosted version only).
+  </Step>
+  
+  <Step title="Integrate with your agent">
+    Wire up Executor's MCP endpoint to your AI agent or automation workflow.
+  </Step>
+</Steps>
+
+<Card title="Join the Community" icon="discord" href="https://discord.gg/executor">
+  Get help, share workflows, and connect with other Executor users.
+</Card>

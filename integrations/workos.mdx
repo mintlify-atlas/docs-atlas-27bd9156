@@ -1,0 +1,405 @@
+---
+title: WorkOS Integration
+description: WorkOS authentication, organizations, and user management
+---
+
+Executor integrates with [WorkOS](https://workos.com/) for authentication, organization management, and user directory synchronization.
+
+## Overview
+
+The WorkOS integration provides:
+
+- **User authentication** - OAuth 2.0 and AuthKit integration
+- **Organization management** - Multi-tenant workspace organization
+- **Directory sync** - Automatic user and membership synchronization
+- **Webhook handlers** - Real-time event processing
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# WorkOS credentials (required)
+WORKOS_CLIENT_ID=client_...
+WORKOS_API_KEY=sk_test_...
+WORKOS_WEBHOOK_SECRET=...
+
+# Cookie encryption (required, 32+ characters)
+WORKOS_COOKIE_PASSWORD=<openssl rand -base64 32>
+
+# Optional: AuthKit domain for OAuth
+WORKOS_AUTHKIT_ISSUER=https://your-authkit-domain.authkit.app
+WORKOS_AUTHKIT_DOMAIN=https://your-authkit-domain.authkit.app
+```
+
+### Convex Setup
+
+WorkOS integration is initialized in `executor/packages/database/convex/auth.ts`:
+
+```typescript
+import { AuthKit } from "@convex-dev/workos-authkit";
+import { components, internal } from "./_generated/api";
+import { workosEventHandlers } from "../src/auth/event_handlers";
+
+const authKit = new AuthKit(components.workOSAuthKit, {
+  authFunctions: internal.auth,
+  additionalEventTypes: [
+    "organization.created",
+    "organization.updated",
+    "organization.deleted",
+    "organization_membership.created",
+    "organization_membership.updated",
+    "organization_membership.deleted",
+  ],
+});
+
+// Register HTTP routes
+authKit.registerRoutes(http);
+
+// Register webhook handlers
+const authKitEvents = authKit.events(workosEventHandlers);
+```
+
+## Authentication
+
+### User Bootstrap
+
+When a user signs in, Executor bootstraps their account and workspace:
+
+```typescript
+export const bootstrapCurrentWorkosAccount = customMutation({
+  args: {
+    sessionId: v.optional(v.string()),
+    profileName: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return null;
+
+    // Resolve user profile from WorkOS
+    const profile = await getAuthKitUserProfile(ctx, identity.subject);
+    
+    // Create or update account
+    const account = await upsertWorkosAccount(ctx, {
+      workosUserId: identity.subject,
+      email: profile.email,
+      fullName: profile.fullName,
+      // ...
+    });
+
+    // Link anonymous sessions
+    await claimAnonymousSessionToWorkosAccount(ctx, {
+      sessionId: args?.sessionId,
+      targetAccountId: account._id,
+    });
+
+    // Ensure workspace access
+    await getOrCreatePersonalWorkspace(ctx, account._id, profile);
+    
+    return account;
+  },
+});
+```
+
+### Identity Resolution
+
+Executor resolves user identity from multiple sources:
+
+```typescript
+function resolveIdentityProfile({
+  identity,
+  authKitProfile,
+}: {
+  identity: UserIdentity;
+  authKitProfile?: AuthKitProfile;
+}) {
+  return {
+    email: identity.email || authKitProfile?.email,
+    fullName: identity.name || authKitProfile?.firstName + " " + authKitProfile?.lastName,
+    firstName: identity.givenName || authKitProfile?.firstName,
+    lastName: identity.familyName || authKitProfile?.lastName,
+    avatarUrl: identity.pictureUrl || authKitProfile?.profilePictureUrl,
+    hintedWorkosOrgId: authKitProfile?.organizationId,
+  };
+}
+```
+
+### Generated Names
+
+Executor detects and refreshes auto-generated WorkOS names:
+
+```typescript
+function isGeneratedWorkosLabel(value: string, workosUserId: string): boolean {
+  const fallbackSuffix = workosUserId.trim().slice(-6);
+  
+  // Check for "User ABC123" pattern
+  if (normalizedValue.toLowerCase() === `user ${fallbackSuffix}`.toLowerCase()) {
+    return true;
+  }
+  
+  return /^user\s+[a-z0-9]{6,}$/i.test(normalizedValue);
+}
+```
+
+## Organization Management
+
+### Organization Membership
+
+Executor syncs organization memberships from WorkOS:
+
+```typescript
+await activateOrganizationMembershipFromInviteHint(ctx, {
+  organizationId: organization._id,
+  accountId: account._id,
+  email: account.email,
+  now: Date.now(),
+  fallbackRole: "member",
+  billable: true,
+});
+```
+
+### Workspace Creation
+
+Users without organization access get a personal workspace:
+
+```typescript
+if (!hasWorkspaceMembership) {
+  await getOrCreatePersonalWorkspace(ctx, account._id, {
+    email: profile.email,
+    firstName: profile.firstName,
+    fullName: profile.fullName,
+    workosUserId: identity.subject,
+    now: Date.now(),
+  });
+}
+```
+
+## Webhook Events
+
+Executor handles WorkOS webhook events to keep user and organization data in sync.
+
+### Event Deduplication
+
+Webhook events are fingerprinted to prevent duplicate processing:
+
+```typescript
+function workosEventFingerprint(eventType: string, data: unknown): string {
+  return `${eventType}:${hashFNV1a(stableSerialize(data))}`;
+}
+
+await ctx.db.insert("authWebhookReceipts", {
+  provider: "workos",
+  eventType: "user.created",
+  fingerprint: workosEventFingerprint(eventType, data),
+  receivedAt: Date.now(),
+});
+```
+
+### Supported Events
+
+<Tabs>
+<Tab title="User Events">
+```typescript
+// user.created
+workosEventHandlers["user.created"] = async (ctx, event) => {
+  await upsertWorkosAccount(ctx, {
+    workosUserId: event.data.id,
+    email: event.data.email,
+    fullName: [event.data.firstName, event.data.lastName]
+      .filter(Boolean)
+      .join(" ") || event.data.email,
+    // ...
+  });
+};
+
+// user.updated
+workosEventHandlers["user.updated"] = async (ctx, event) => {
+  const account = await getAccountByWorkosId(ctx, event.data.id);
+  if (account) {
+    await ctx.db.patch(account._id, {
+      email: event.data.email,
+      name: fullName,
+      status: "active",
+    });
+  }
+};
+
+// user.deleted
+workosEventHandlers["user.deleted"] = async (ctx, event) => {
+  const account = await getAccountByWorkosId(ctx, event.data.id);
+  if (account) {
+    await ctx.db.patch(account._id, { status: "deleted" });
+    // Deactivate all memberships
+  }
+};
+```
+</Tab>
+
+<Tab title="Organization Events">
+```typescript
+// organization.created
+workosEventHandlers["organization.created"] = async (ctx, event) => {
+  // Record event (no-op, organizations created on demand)
+  await claimWorkosWebhookReceipt(ctx, {
+    eventType: "organization.created",
+    data: event.data,
+    now: Date.now(),
+  });
+};
+
+// organization.updated
+workosEventHandlers["organization.updated"] = async (ctx, event) => {
+  // Record event (no-op)
+};
+
+// organization.deleted
+workosEventHandlers["organization.deleted"] = async (ctx, event) => {
+  // Record event (no-op)
+};
+```
+</Tab>
+
+<Tab title="Membership Events">
+```typescript
+// organization_membership.created
+workosEventHandlers["organization_membership.created"] = async (ctx, event) => {
+  const { user_id, organization_id } = event.data;
+  
+  await activateOrganizationMembershipFromInviteHint(ctx, {
+    organizationId: organization._id,
+    accountId: account._id,
+    email: account.email,
+    now: Date.now(),
+    fallbackRole: "member",
+    billable: true,
+  });
+};
+
+// organization_membership.updated
+workosEventHandlers["organization_membership.updated"] = async (ctx, event) => {
+  // Same as created - ensures membership is active
+};
+
+// organization_membership.deleted
+workosEventHandlers["organization_membership.deleted"] = async (ctx, event) => {
+  const membership = await getMembership(ctx, event.data);
+  if (membership) {
+    await ctx.db.patch(membership._id, {
+      status: "removed",
+      billable: false,
+    });
+  }
+};
+```
+</Tab>
+</Tabs>
+
+## Token Verification
+
+Executor verifies WorkOS JWT tokens for MCP requests:
+
+```typescript
+import { createRemoteJWKSet, jwtVerify } from "jose";
+
+const jwks = createRemoteJWKSet(
+  new URL("/oauth2/jwks", authorizationServer)
+);
+
+const { payload } = await jwtVerify(token, jwks, {
+  issuer: authorizationServer,
+});
+
+if (payload.provider !== "anonymous") {
+  return {
+    provider: "workos",
+    subject: payload.sub,
+  };
+}
+```
+
+<Note>
+WorkOS tokens use the client's client ID as the audience, so Executor only validates issuer and signature.
+</Note>
+
+## Workspace Authorization
+
+After authenticating with WorkOS, Executor checks workspace access:
+
+```typescript
+const access = await getWorkspaceAccessForWorkosSubject({
+  workspaceId: "wks_...",
+  subject: "user_...",
+});
+
+context = {
+  workspaceId,
+  accountId: access.accountId,
+  clientId: "mcp",
+};
+```
+
+## Credentials Management
+
+WorkOS credentials can be stored in the WorkOS Vault for secure credential management:
+
+```typescript
+import { WorkOSVaultReader } from "../src/runtime/workos_vault_reader";
+
+const vaultReader = new WorkOSVaultReader({
+  apiKey: process.env.WORKOS_API_KEY,
+  organizationId: org.workosOrgId,
+});
+
+const credentials = await vaultReader.getCredentials(credentialId);
+```
+
+## Testing
+
+<CodeGroup>
+```bash Local Development
+# Start with WorkOS in .env
+bun run dev
+
+# Visit local web app
+open http://localhost:5312
+
+# Sign in with WorkOS AuthKit
+# Should create account and personal workspace
+```
+
+```bash Webhook Testing
+# Use WorkOS CLI to forward webhooks
+workos webhooks forward --to http://localhost:5410/auth/workos/webhook
+
+# Trigger test events in WorkOS dashboard
+# Check Convex dashboard for authWebhookReceipts table
+```
+
+```typescript API Testing
+import { testingClient } from "convex/testing";
+
+const client = testingClient();
+
+// Bootstrap account
+const account = await client.mutation(
+  api.auth.bootstrapCurrentWorkosAccount,
+  {
+    sessionId: "test-session",
+    profileName: "Test User",
+  }
+);
+
+expect(account).toBeDefined();
+expect(account.provider).toBe("workos");
+```
+</CodeGroup>
+
+## Source Files
+
+- `executor/packages/database/convex/auth.ts` - AuthKit initialization
+- `executor/packages/database/src/auth/bootstrap.ts` - Account bootstrap logic
+- `executor/packages/database/src/auth/event_handlers.ts` - Webhook event handlers
+- `executor/packages/database/src/auth/identity.ts` - Identity resolution
+- `executor/packages/database/src/auth/accounts.ts` - Account management
+- `executor/packages/database/src/auth/memberships.ts` - Organization membership
+- `executor/packages/database/convex/http/mcp_auth.ts` - MCP token verification

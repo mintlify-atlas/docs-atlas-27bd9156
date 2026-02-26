@@ -1,0 +1,484 @@
+---
+title: Stripe Integration
+description: Usage-based billing with Stripe Subscriptions
+---
+
+Executor integrates with [Stripe](https://stripe.com/) for usage-based billing and subscription management.
+
+## Overview
+
+The Stripe integration provides:
+
+- **Subscription checkout** - Create subscription checkout sessions
+- **Customer portal** - Manage subscriptions and billing
+- **Seat-based billing** - Automatic seat quantity synchronization
+- **Webhook handling** - Real-time subscription updates
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# Stripe credentials (required)
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_PRICE_ID=price_...
+
+# Billing URLs (optional, defaults to localhost:4312)
+BILLING_SUCCESS_URL=http://localhost:4312/organization?tab=billing&success=true
+BILLING_CANCEL_URL=http://localhost:4312/organization?tab=billing&canceled=true
+BILLING_RETURN_URL=http://localhost:4312/organization?tab=billing
+```
+
+### Convex Setup
+
+Stripe integration is registered in `executor/packages/database/convex/http.ts`:
+
+```typescript
+import { registerRoutes as registerStripeRoutes } from "@convex-dev/stripe";
+import { components } from "./_generated/api";
+
+registerStripeRoutes(http, components.stripe, {
+  webhookPath: "/stripe/webhook",
+});
+```
+
+## Endpoints
+
+### Get Billing Summary
+
+```
+GET /billing/getSummary
+```
+
+Returns billing information for the current organization.
+
+**Response:**
+
+```typescript
+{
+  organizationId: string;
+  customer: {
+    stripeCustomerId: string;
+  } | null;
+  subscription: {
+    stripeSubscriptionId: string;
+    stripePriceId: string;
+    status: string;
+    currentPeriodEnd: number;
+    cancelAtPeriodEnd: boolean;
+  } | null;
+  seats: {
+    billableMembers: number;
+    desiredSeats: number;
+    lastAppliedSeats: number | null;
+  };
+  sync: {
+    status: "ok" | "error" | "pending";
+    lastSyncAt: number | null;
+    error: string | null;
+  };
+}
+```
+
+### Create Subscription Checkout
+
+```
+POST /billing/createSubscriptionCheckout
+```
+
+Creates a Stripe checkout session for a new subscription.
+
+**Request:**
+
+```typescript
+{
+  organizationId: string;
+  priceId: string;
+  successUrl?: string;
+  cancelUrl?: string;
+  sessionId?: string;
+}
+```
+
+**Response:**
+
+```typescript
+{
+  url: string; // Stripe checkout URL
+  sessionId: string;
+}
+```
+
+**Example:**
+
+```typescript
+const checkout = await client.action(
+  api.billing.createSubscriptionCheckout,
+  {
+    organizationId: "org_...",
+    priceId: "price_...",
+    successUrl: "https://app.example.com/billing/success",
+    cancelUrl: "https://app.example.com/billing/cancel",
+  }
+);
+
+// Redirect to checkout
+window.location.href = checkout.url;
+```
+
+### Create Customer Portal
+
+```
+POST /billing/createCustomerPortal
+```
+
+Creates a Stripe customer portal session for subscription management.
+
+**Request:**
+
+```typescript
+{
+  organizationId: string;
+  returnUrl?: string;
+  sessionId?: string;
+}
+```
+
+**Response:**
+
+```typescript
+{
+  url: string; // Stripe portal URL
+}
+```
+
+**Example:**
+
+```typescript
+const portal = await client.action(
+  api.billing.createCustomerPortal,
+  {
+    organizationId: "org_...",
+    returnUrl: "https://app.example.com/organization?tab=billing",
+  }
+);
+
+// Redirect to portal
+window.location.href = portal.url;
+```
+
+### Retry Seat Sync
+
+```
+POST /billing/retrySeatSync
+```
+
+Manually trigger seat quantity synchronization.
+
+**Requirements:**
+
+- Requires billing admin role
+- Organization context from authenticated session
+
+**Response:**
+
+```typescript
+{
+  ok: boolean;
+  queued: boolean;
+}
+```
+
+## Seat-Based Billing
+
+Executor automatically synchronizes subscription seat quantity based on billable organization members.
+
+### Seat Calculation
+
+```typescript
+const billableMembers = await db
+  .query("organizationMembers")
+  .withIndex("by_org_billable_status", (q) =>
+    q
+      .eq("organizationId", organizationId)
+      .eq("billable", true)
+      .eq("status", "active")
+  )
+  .collect();
+
+const seatQuantity = Math.max(1, billableMembers.length);
+```
+
+### Automatic Synchronization
+
+Seat quantity is synchronized:
+
+1. **On checkout** - Initial quantity set to billable member count
+2. **On membership change** - Triggered by organization membership events
+3. **On subscription update** - Stripe webhook updates trigger sync check
+4. **Manual retry** - Via `retrySeatSync` endpoint
+
+### Sync State Tracking
+
+Executor tracks seat sync state in the `billingSeatState` table:
+
+```typescript
+{
+  organizationId: Id<"organizations">;
+  desiredSeats: number;        // Target seat count
+  lastAppliedSeats: number;    // Last synced to Stripe
+  lastSyncAt: number;          // Timestamp of last sync
+  syncError: string | null;    // Error message if sync failed
+  syncVersion: number;         // Optimistic locking version
+}
+```
+
+## Customer Management
+
+### Customer Creation
+
+Stripe customers are created automatically on first checkout:
+
+```typescript
+const customer = await stripeClient.createCustomer(ctx, {
+  email: account.email,
+  name: organization.name,
+  metadata: {
+    orgId: String(organizationId),
+  },
+  idempotencyKey: `org:${organizationId}`,
+});
+
+await ctx.runMutation(internal.billingInternal.upsertCustomerLink, {
+  organizationId,
+  stripeCustomerId: customer.customerId,
+});
+```
+
+### Customer Linking
+
+Customer IDs are cached in the `billingCustomers` table:
+
+```typescript
+{
+  organizationId: Id<"organizations">;
+  stripeCustomerId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+```
+
+## Subscription Management
+
+### Subscription Creation
+
+Checkout sessions create subscriptions with metadata:
+
+```typescript
+const session = await stripeClient.createCheckoutSession(ctx, {
+  priceId: "price_...",
+  customerId: "cus_...",
+  mode: "subscription",
+  quantity: billableMembers,
+  successUrl: "https://...",
+  cancelUrl: "https://...",
+  subscriptionMetadata: {
+    orgId: String(organizationId),
+  },
+});
+```
+
+### Subscription Updates
+
+Stripe webhooks sync subscription updates to Convex:
+
+```typescript
+// Webhook handler in @convex-dev/stripe component
+// Stores subscription in component tables
+// Accessible via components.stripe.public.getSubscriptionByOrgId
+```
+
+## Authorization
+
+### Billing Access Control
+
+```typescript
+function canAccessBilling(role: string): boolean {
+  return isAdminRole(role) || canManageBilling(role);
+}
+```
+
+**Allowed roles:**
+
+- `admin` - Full organization admin
+- `billing_admin` - Billing-only admin
+- Custom roles with `canManageBilling` permission
+
+### Access Verification
+
+```typescript
+const access = await ctx.runQuery(
+  internal.billingInternal.getBillingAccessForRequest,
+  {
+    organizationId: "org_...",
+    sessionId: "session_...",
+  }
+);
+
+if (!access || !canAccessBilling(access.role)) {
+  throw new Error("Only organization admins can manage billing");
+}
+```
+
+## Webhook Events
+
+### Webhook Endpoint
+
+```
+POST /stripe/webhook
+```
+
+Processed by `@convex-dev/stripe` component.
+
+**Signature verification:**
+
+```typescript
+const signature = request.headers.get("stripe-signature");
+const event = stripe.webhooks.constructEvent(
+  payload,
+  signature,
+  process.env.STRIPE_WEBHOOK_SECRET
+);
+```
+
+### Supported Events
+
+The Stripe component handles these events automatically:
+
+- `customer.created`
+- `customer.updated`
+- `customer.deleted`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+- `invoice.payment_succeeded`
+- `invoice.payment_failed`
+
+## Testing
+
+<Tabs>
+<Tab title="Local Development">
+```bash
+# Install Stripe CLI
+brew install stripe/stripe-cli/stripe
+
+# Login to Stripe
+stripe login
+
+# Forward webhooks to local server
+stripe listen --forward-to http://localhost:5410/stripe/webhook
+
+# Get webhook signing secret
+stripe listen --print-secret
+# Set in .env as STRIPE_WEBHOOK_SECRET
+
+# Trigger test events
+stripe trigger customer.subscription.created
+stripe trigger customer.subscription.updated
+```
+</Tab>
+
+<Tab title="Checkout Flow">
+```typescript
+import { testingClient } from "convex/testing";
+
+const client = testingClient();
+
+// Create checkout session
+const checkout = await client.action(
+  api.billing.createSubscriptionCheckout,
+  {
+    organizationId: "org_test123",
+    priceId: "price_test123",
+  }
+);
+
+console.log("Checkout URL:", checkout.url);
+
+// Complete checkout in browser
+// Then verify subscription
+
+const summary = await client.query(
+  api.billing.getSummary,
+  { organizationId: "org_test123" }
+);
+
+expect(summary.subscription).toBeDefined();
+expect(summary.subscription.status).toBe("active");
+```
+</Tab>
+
+<Tab title="Seat Sync">
+```typescript
+// Add organization member
+await client.mutation(
+  api.organizations.addMember,
+  {
+    organizationId: "org_test123",
+    email: "newmember@example.com",
+    role: "member",
+  }
+);
+
+// Wait for async seat sync
+await new Promise((resolve) => setTimeout(resolve, 2000));
+
+// Verify seat count updated
+const summary = await client.query(
+  api.billing.getSummary,
+  { organizationId: "org_test123" }
+);
+
+expect(summary.seats.desiredSeats).toBe(2);
+```
+</Tab>
+</Tabs>
+
+<Note>
+Use Stripe test mode keys for development. Test mode transactions don't charge real money.
+</Note>
+
+## Error Handling
+
+### Sync Errors
+
+Seat sync errors are tracked in `billingSeatState.syncError`:
+
+```typescript
+const summary = await client.query(api.billing.getSummary, {});
+
+if (summary.sync.status === "error") {
+  console.error("Seat sync failed:", summary.sync.error);
+  
+  // Retry sync
+  await client.mutation(api.billing.retrySeatSync, {});
+}
+```
+
+### Common Errors
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| No Stripe customer found | Customer not created | Create checkout session first |
+| Invalid price ID | Wrong STRIPE_PRICE_ID | Verify price ID in Stripe dashboard |
+| Webhook signature failed | Wrong STRIPE_WEBHOOK_SECRET | Update secret from Stripe CLI |
+| Only admins can manage billing | Insufficient role | Check user role in organization |
+
+## Source Files
+
+- `executor/packages/database/convex/billing.ts` - Public billing API
+- `executor/packages/database/convex/billingInternal.ts` - Internal billing helpers
+- `executor/packages/database/convex/billingSync.ts` - Seat synchronization logic
+- `executor/packages/database/src/billing/public-handlers.ts` - Endpoint handlers
+- `executor/packages/database/convex/http.ts` - Stripe webhook route registration

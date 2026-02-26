@@ -1,0 +1,312 @@
+---
+title: "Anonymous MCP Endpoint"
+description: "Execute tasks using API key authentication without OAuth"
+---
+
+## Overview
+
+The anonymous MCP endpoint provides API key-based authentication for MCP tool calls, allowing execution without OAuth setup. This is ideal for:
+
+- Self-hosted deployments
+- CI/CD integrations
+- Automated workflows
+- Service-to-service communication
+
+## Endpoint
+
+```
+POST https://your-deployment.convex.site/mcp/anonymous?workspaceId=<WORKSPACE_ID>
+```
+
+**Legacy endpoints also supported:**
+- `POST /v1/mcp/anonymous`
+- `GET /mcp/anonymous` (for MCP protocol negotiation)
+- `DELETE /mcp/anonymous` (for session cleanup)
+
+## Authentication
+
+API keys can be provided in two ways:
+
+<CodeGroup>
+```bash Authorization Header
+curl -X POST "https://your-deployment.convex.site/mcp/anonymous?workspaceId=ws_123" \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"execute","arguments":{"code":"return 1+1"}}}'
+```
+
+```bash X-API-Key Header
+curl -X POST "https://your-deployment.convex.site/mcp/anonymous?workspaceId=ws_123" \
+  -H "x-api-key: <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"execute","arguments":{"code":"return 1+1"}}}'
+```
+</CodeGroup>
+
+## Requirements
+
+<Steps>
+  <Step title="Generate API Key">
+    Create an API key from the Executor web UI:
+    1. Navigate to Settings → API Keys
+    2. Click "Generate New Key"
+    3. Copy the key (shown only once)
+    4. Store securely in your environment
+  </Step>
+
+  <Step title="Get Workspace ID">
+    Find your workspace ID in the web UI:
+    - Settings → Workspace → Workspace ID
+    - Or extract from URL: `https://app.executor.sh/workspace/<WORKSPACE_ID>`
+  </Step>
+
+  <Step title="Include in Query Parameter">
+    The `workspaceId` query parameter is **required** for all anonymous endpoint requests.
+  </Step>
+</Steps>
+
+## Security
+
+<Warning>
+  API keys provide full workspace access. Treat them like passwords:
+  - Store in environment variables or secrets managers
+  - Never commit to version control
+  - Rotate regularly
+  - Use separate keys per environment/service
+</Warning>
+
+### Key Verification
+
+The endpoint verifies:
+
+1. **API key signature** - Uses MCP API key signing configured on server
+2. **Workspace match** - API key must be issued for the requested workspace
+3. **Account access** - Account associated with key must have workspace access
+4. **Anonymous provider** - Currently restricted to anonymous accounts only
+
+### Error Responses
+
+<ResponseField name="400 Bad Request">
+  Missing `workspaceId` query parameter
+</ResponseField>
+
+<ResponseField name="401 Unauthorized">
+  Missing or invalid API key
+</ResponseField>
+
+<ResponseField name="403 Forbidden">
+  - API key does not match requested workspace
+  - Account lacks workspace access
+  - API key auth not enabled for account type
+</ResponseField>
+
+<ResponseField name="503 Service Unavailable">
+  MCP API key signing not configured on server
+</ResponseField>
+
+## MCP Protocol
+
+The anonymous endpoint implements the full [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) specification:
+
+### Supported Methods
+
+<AccordionGroup>
+  <Accordion title="tools/list" icon="list">
+    List all available tools in the workspace
+    
+    ```json
+    {
+      "jsonrpc": "2.0",
+      "method": "tools/list",
+      "id": 1
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="tools/call" icon="play">
+    Execute a tool (typically `execute` for code execution)
+    
+    ```json
+    {
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "id": 1,
+      "params": {
+        "name": "execute",
+        "arguments": {
+          "code": "return tools.catalog.namespaces({})"
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="initialize" icon="handshake">
+    Initialize MCP session and negotiate capabilities
+    
+    ```json
+    {
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "id": 1,
+      "params": {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "my-client",
+          "version": "1.0.0"
+        }
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Session Management
+
+Sessions are automatically managed:
+
+- **Automatic creation** - New anonymous workspace/account context created per request if needed
+- **Session IDs** - Include `sessionId` in `execute` arguments to group related tasks
+- **Ephemeral state** - Each request uses fresh or session-scoped context
+- **No cleanup required** - Sessions expire automatically
+
+```json Session ID Example
+{
+  "name": "execute",
+  "arguments": {
+    "code": "return tools.fs.read({ path: '/data.json' })",
+    "sessionId": "my-batch-job-001"
+  }
+}
+```
+
+## Complete Example
+
+<CodeGroup>
+```typescript Node.js
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
+
+const API_KEY = process.env.EXECUTOR_API_KEY;
+const WORKSPACE_ID = process.env.EXECUTOR_WORKSPACE_ID;
+const BASE_URL = 'https://your-deployment.convex.site';
+
+const client = new Client({
+  name: 'my-service',
+  version: '1.0.0'
+}, {
+  capabilities: {}
+});
+
+const transport = new WebSocketClientTransport(
+  new URL(`/mcp/anonymous?workspaceId=${WORKSPACE_ID}`, BASE_URL),
+  {
+    headers: {
+      'Authorization': `Bearer ${API_KEY}`
+    }
+  }
+);
+
+await client.connect(transport);
+
+// Execute code
+const result = await client.callTool('execute', {
+  code: 'return await tools.github.repos.get({ owner: "octocat", repo: "hello-world" })',
+  timeoutMs: 30000
+});
+
+console.log(result);
+```
+
+```python Python
+import os
+import json
+import httpx
+
+API_KEY = os.getenv('EXECUTOR_API_KEY')
+WORKSPACE_ID = os.getenv('EXECUTOR_WORKSPACE_ID')
+BASE_URL = 'https://your-deployment.convex.site'
+
+url = f"{BASE_URL}/mcp/anonymous?workspaceId={WORKSPACE_ID}"
+headers = {
+    'Authorization': f'Bearer {API_KEY}',
+    'Content-Type': 'application/json'
+}
+
+payload = {
+    'jsonrpc': '2.0',
+    'method': 'tools/call',
+    'id': 1,
+    'params': {
+        'name': 'execute',
+        'arguments': {
+            'code': 'return await tools.github.repos.get({ owner: "octocat", repo: "hello-world" })',
+            'timeoutMs': 30000
+        }
+    }
+}
+
+response = httpx.post(url, headers=headers, json=payload)
+result = response.json()
+print(json.dumps(result, indent=2))
+```
+
+```bash cURL
+curl -X POST "https://your-deployment.convex.site/mcp/anonymous?workspaceId=ws_abc123" \
+  -H "Authorization: Bearer sk_live_xyz789" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "id": 1,
+    "params": {
+      "name": "execute",
+      "arguments": {
+        "code": "const namespaces = await tools.catalog.namespaces({}); return namespaces",
+        "timeoutMs": 30000
+      }
+    }
+  }'
+```
+</CodeGroup>
+
+## Configuration
+
+Server-side configuration (environment variables):
+
+```bash .env
+# Required for anonymous endpoint
+EXECUTOR_MCP_API_KEY_SECRET=<secret_for_signing_keys>
+
+# Optional: disable OAuth requirement
+EXECUTOR_DEPLOYMENT_MODE=self-hosted
+# or
+EXECUTOR_ENFORCE_MCP_AUTH=false
+```
+
+## Comparison with OAuth Endpoint
+
+| Feature | `/mcp/anonymous` | `/mcp` |
+|---------|------------------|--------|
+| Authentication | API Key | WorkOS OAuth |
+| Setup Complexity | Low | Medium |
+| User Context | Anonymous | Authenticated user |
+| Use Case | Service integration | User-facing applications |
+| Workspace ID | Required in query | Required in query |
+| Rate Limits | Per workspace | Per user/workspace |
+
+## Rate Limits
+
+Same rate limits as the authenticated endpoint:
+
+- Default: 100 requests per minute per workspace
+- Configurable in workspace settings
+- Returns HTTP 429 when exceeded
+
+## Related
+
+- [execute Tool API](/api/mcp-execute)
+- [MCP Tools Discovery](/api/mcp-tools)
+- [Configuration Guide](/deployment/configuration)
+- [MCP Protocol Specification](https://modelcontextprotocol.io/)

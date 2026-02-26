@@ -1,0 +1,671 @@
+---
+title: 'Access Policies'
+description: 'Control tool access with role-based policies, approval modes, and fine-grained rules'
+---
+
+## Overview
+
+Access policies control which tools can be invoked by tasks in a workspace. Policies use a **role-based** model with three components:
+
+1. **Policy Sets** (Tool Roles): Named collections of rules
+2. **Policy Rules**: Specify which tools are allowed/denied and approval requirements
+3. **Policy Assignments** (Bindings): Assign roles to accounts, workspaces, or clients
+
+Policies are evaluated in priority order to determine if a tool call is allowed, denied, or requires approval.
+
+## Policy Components
+
+### Policy Sets (Tool Roles)
+
+A policy set groups related rules:
+
+```typescript
+// From schema.ts:290-301
+toolRoles: defineTable({
+  roleId: v.string(),                  // domain ID: trole_<uuid>
+  organizationId: v.id("organizations"),
+  name: v.string(),                    // e.g., "Production Admin", "Read Only"
+  description: v.optional(v.string()),
+  createdByAccountId: v.optional(v.id("accounts")),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+```
+
+<ParamField path="roleId" type="string" required>
+  Unique identifier (e.g., `trole_<uuid>`).
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Display name, must be unique within the organization.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Optional explanation of the role's purpose.
+</ParamField>
+
+### Policy Rules
+
+Rules define access for specific tools or tool patterns:
+
+```typescript
+// From schema.ts:304-322
+toolRoleRules: defineTable({
+  ruleId: v.string(),                      // domain ID: trule_<uuid>
+  roleId: v.string(),                      // Parent role
+  organizationId: v.id("organizations"),
+  selectorType: toolRoleSelectorTypeValidator,  // "all" | "source" | "namespace" | "tool_path"
+  sourceKey: v.optional(v.string()),       // For "source" selector
+  namespacePattern: v.optional(v.string()),// For "namespace" selector
+  toolPathPattern: v.optional(v.string()), // For "tool_path" selector
+  matchType: policyMatchTypeValidator,     // "glob" | "exact"
+  effect: policyEffectValidator,           // "allow" | "deny"
+  approvalMode: policyApprovalModeValidator,  // "inherit" | "auto" | "required"
+  argumentConditions: v.optional(v.array(argumentConditionValidator)),
+  priority: v.number(),                    // Higher priority = evaluated first
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+```
+
+<ParamField path="selectorType" type="'all' | 'source' | 'namespace' | 'tool_path'" required>
+  How to match tools:
+  - **all**: Matches all tools
+  - **source**: Matches all tools from a specific source
+  - **namespace**: Matches tools by namespace pattern
+  - **tool_path**: Matches tools by path pattern
+</ParamField>
+
+<ParamField path="matchType" type="'glob' | 'exact'" required>
+  Pattern matching style:
+  - **glob**: Use wildcards (`*`, `**`) for pattern matching
+  - **exact**: Match exact string only
+</ParamField>
+
+<ParamField path="effect" type="'allow' | 'deny'" required>
+  Whether to allow or deny tool calls matching this rule.
+</ParamField>
+
+<ParamField path="approvalMode" type="'inherit' | 'auto' | 'required'" required>
+  Approval behavior:
+  - **inherit**: Use default or parent rule approval mode
+  - **auto**: Allow without approval
+  - **required**: Require human approval before execution
+</ParamField>
+
+<ParamField path="priority" type="number" default="100">
+  Evaluation priority. Higher values are evaluated first.
+</ParamField>
+
+<ParamField path="argumentConditions" type="Array<ArgumentCondition>">
+  Optional conditions on tool input arguments. Rule only matches if conditions are met.
+  
+  ```typescript
+  argumentConditions: [
+    { key: "repo", operator: "equals", value: "my-repo" },
+    { key: "branch", operator: "starts_with", value: "prod-" }
+  ]
+  ```
+  
+  **Operators**: `equals`, `contains`, `starts_with`, `not_equals`
+  
+  **Source**: `packages/core/src/types.ts:178-185`
+</ParamField>
+
+### Policy Assignments (Bindings)
+
+Bindings assign roles to contexts:
+
+```typescript
+// From schema.ts:325-342
+toolRoleBindings: defineTable({
+  bindingId: v.string(),                // domain ID: trbind_<uuid>
+  roleId: v.string(),
+  organizationId: v.id("organizations"),
+  scopeType: policyScopeTypeValidator,  // "account" | "workspace" | "organization"
+  workspaceId: v.optional(v.id("workspaces")),
+  targetAccountId: v.optional(v.id("accounts")),
+  clientId: v.optional(v.string()),
+  status: toolRoleBindingStatusValidator,  // "active" | "disabled"
+  expiresAt: v.optional(v.number()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+```
+
+<ParamField path="scopeType" type="'account' | 'workspace' | 'organization'" required>
+  Binding scope:
+  - **account**: Apply to specific account in the organization
+  - **workspace**: Apply to all tasks in a workspace
+  - **organization**: Apply to all workspaces in the organization
+</ParamField>
+
+<ParamField path="targetAccountId" type="Id<'accounts'>">
+  Required for account-scoped bindings. The account this role applies to.
+</ParamField>
+
+<ParamField path="clientId" type="string">
+  Optional client filter (e.g., `"web"`, `"mcp"`) to apply role only to specific clients.
+</ParamField>
+
+<ParamField path="status" type="'active' | 'disabled'" required>
+  Binding status. Only active bindings are evaluated.
+</ParamField>
+
+<ParamField path="expiresAt" type="number">
+  Optional expiration timestamp. Binding is ignored after this time.
+</ParamField>
+
+## Creating Policies
+
+### 1. Create a Policy Set
+
+```typescript
+// From policies.ts:351-412
+export const upsertToolPolicySet = internalMutation({
+  args: {
+    workspaceId: vv.id("workspaces"),
+    id: v.optional(v.string()),      // Reuse existing roleId or generate new
+    name: v.string(),
+    description: v.optional(v.string()),
+    createdByAccountId: v.optional(vv.id("accounts")),
+  },
+  handler: async (ctx, args) => {
+    const roleId = args.id?.trim() || `trole_${crypto.randomUUID()}`;
+    const name = args.name.trim();
+    
+    // Check for name conflicts
+    const conflict = await ctx.db
+      .query("toolRoles")
+      .withIndex("by_org_name", (q) => 
+        q.eq("organizationId", organizationId).eq("name", name)
+      )
+      .unique();
+    
+    if (conflict && conflict.roleId !== roleId) {
+      throw new Error("A tool role with this name already exists");
+    }
+    
+    // Insert or update role
+    await ctx.db.insert("toolRoles", {
+      roleId,
+      organizationId,
+      name,
+      description: args.description?.trim(),
+      createdByAccountId: args.createdByAccountId,
+      createdAt: now,
+      updatedAt: now,
+    });
+  },
+});
+```
+
+### 2. Add Rules to the Set
+
+```typescript
+// From policies.ts:464-543
+export const upsertToolPolicyRule = internalMutation({
+  args: {
+    workspaceId: vv.id("workspaces"),
+    roleId: v.string(),
+    id: v.optional(v.string()),
+    selectorType: toolRoleSelectorTypeValidator,
+    sourceKey: v.optional(v.string()),
+    resourcePattern: v.optional(v.string()),  // For namespace/tool_path
+    matchType: v.optional(policyMatchTypeValidator),
+    effect: v.optional(policyEffectValidator),
+    approvalMode: v.optional(policyApprovalModeValidator),
+    argumentConditions: v.optional(v.array(argumentConditionValidator)),
+    priority: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const ruleId = args.id?.trim() || `trule_${crypto.randomUUID()}`;
+    
+    // Validate selector requirements
+    if (args.selectorType === "source" && !args.sourceKey) {
+      throw new Error("sourceKey required for 'source' selector");
+    }
+    if ((args.selectorType === "namespace" || args.selectorType === "tool_path") 
+        && !args.resourcePattern) {
+      throw new Error("resourcePattern required for namespace/tool_path");
+    }
+    
+    // Insert or update rule
+    await ctx.db.insert("toolRoleRules", {
+      ruleId,
+      roleId: args.roleId,
+      organizationId,
+      selectorType: args.selectorType,
+      sourceKey: args.selectorType === "source" ? args.sourceKey : undefined,
+      namespacePattern: args.selectorType === "namespace" ? args.resourcePattern : undefined,
+      toolPathPattern: args.selectorType === "tool_path" ? args.resourcePattern : undefined,
+      matchType: args.matchType ?? "glob",
+      effect: args.effect ?? "allow",
+      approvalMode: args.approvalMode ?? "required",
+      argumentConditions: normalizeArgumentConditions(args.argumentConditions),
+      priority: args.priority ?? 100,
+      createdAt: now,
+      updatedAt: now,
+    });
+  },
+});
+```
+
+### 3. Assign the Set to a Context
+
+```typescript
+// From policies.ts:606-689
+export const upsertToolPolicyAssignment = internalMutation({
+  args: {
+    workspaceId: vv.id("workspaces"),
+    roleId: v.string(),
+    id: v.optional(v.string()),
+    scopeType: v.optional(policyScopeTypeValidator),
+    targetAccountId: v.optional(vv.id("accounts")),
+    clientId: v.optional(v.string()),
+    status: v.optional(toolRoleBindingStatusValidator),
+    expiresAt: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const bindingId = args.id?.trim() || `trbind_${crypto.randomUUID()}`;
+    const scopeType = args.scopeType ?? "organization";
+    
+    // Validate scope fields
+    const workspaceId = scopeType === "workspace" ? args.workspaceId : undefined;
+    const targetAccountId = scopeType === "account" ? args.targetAccountId : undefined;
+    
+    assertToolRoleBindingScopeFields({
+      scopeType,
+      workspaceId,
+      targetAccountId,
+    });
+    
+    // For account scope, verify active membership
+    if (scopeType === "account" && targetAccountId) {
+      await assertActiveOrgMember(ctx, {
+        organizationId,
+        accountId: targetAccountId,
+        fieldLabel: "targetAccountId",
+      });
+    }
+    
+    // Insert or update binding
+    await ctx.db.insert("toolRoleBindings", {
+      bindingId,
+      roleId: args.roleId,
+      organizationId,
+      scopeType,
+      workspaceId,
+      targetAccountId,
+      clientId: args.clientId?.trim(),
+      status: args.status ?? "active",
+      expiresAt: args.expiresAt,
+      createdAt: now,
+      updatedAt: now,
+    });
+  },
+});
+```
+
+## Policy Evaluation
+
+When a task attempts a tool call, Executor evaluates applicable policies:
+
+```typescript
+// From policies.ts:737-794
+export const listToolPolicies = internalQuery({
+  args: {
+    workspaceId: vv.id("workspaces"),
+    accountId: v.optional(vv.id("accounts")),
+  },
+  handler: async (ctx, args) => {
+    // 1. Find effective bindings
+    const bindings = await listEffectiveBindings(ctx, {
+      workspaceId: args.workspaceId,
+      organizationId,
+      accountId: args.accountId,
+    });
+    
+    // 2. Fetch rules for each binding's role
+    const roleIds = Array.from(new Set(bindings.map(b => b.roleId)));
+    const roleRules = await Promise.all(
+      roleIds.map(roleId => 
+        ctx.db.query("toolRoleRules")
+          .withIndex("by_role_created", q => q.eq("roleId", roleId))
+          .collect()
+      )
+    );
+    
+    // 3. Flatten into effective policies
+    const policies: ToolPolicyRecord[] = [];
+    for (const binding of bindings) {
+      const rules = rulesByRole.get(binding.roleId) ?? [];
+      for (const rule of rules) {
+        policies.push(mapFlattenedPolicy({
+          // Combine rule + binding into flat policy
+          policyId: derivedPolicyId(binding.roleId, rule.ruleId, binding.bindingId),
+          scopeType: binding.scopeType,
+          organizationId: binding.organizationId,
+          workspaceId: binding.workspaceId,
+          targetAccountId: binding.targetAccountId,
+          resourceType: resourceTypeFromSelectorType(rule.selectorType),
+          resourcePattern: resourcePatternFromRule(rule),
+          matchType: rule.matchType,
+          effect: rule.effect,
+          approvalMode: rule.approvalMode,
+          argumentConditions: rule.argumentConditions,
+          priority: rule.priority,
+          // ...
+        }));
+      }
+    }
+    
+    // 4. Sort by priority (highest first)
+    return policies.sort((a, b) => {
+      if (a.priority !== b.priority) {
+        return b.priority - a.priority;
+      }
+      return a.createdAt - b.createdAt;
+    });
+  },
+});
+```
+
+### Effective Bindings
+
+Bindings are filtered to find applicable ones:
+
+```typescript
+// From policies.ts:275-330
+async function listEffectiveBindings(ctx, args) {
+  const now = Date.now();
+  
+  // Fetch workspace and org bindings
+  const [workspaceBindings, organizationBindings] = await Promise.all([
+    ctx.db.query("toolRoleBindings")
+      .withIndex("by_workspace_created", q => q.eq("workspaceId", args.workspaceId))
+      .collect(),
+    ctx.db.query("toolRoleBindings")
+      .withIndex("by_org_created", q => q.eq("organizationId", args.organizationId))
+      .collect(),
+  ]);
+  
+  return [...workspaceBindings, ...organizationBindings]
+    .filter(binding => {
+      // Must be active
+      if (binding.status !== "active") return false;
+      
+      // Must not be expired
+      if (binding.expiresAt && binding.expiresAt <= now) return false;
+      
+      // Scope matching
+      if (binding.scopeType === "workspace" && 
+          binding.workspaceId !== args.workspaceId) {
+        return false;
+      }
+      
+      if (binding.scopeType === "account" && 
+          binding.targetAccountId !== args.accountId) {
+        return false;
+      }
+      
+      return true;
+    });
+}
+```
+
+### Policy Decision
+
+Policies are evaluated in priority order until a match is found:
+
+1. **Match tool path** against policy resource pattern
+2. **Check argument conditions** if present
+3. **Apply effect**: allow or deny
+4. **Apply approval mode**: auto or required
+
+**Default behavior**: If no policies match, tool call is **denied**.
+
+## Example Policies
+
+### Allow All Tools
+
+```typescript
+// Policy Set: "Development"
+// Rule:
+{
+  selectorType: "all",
+  matchType: "glob",
+  effect: "allow",
+  approvalMode: "auto",
+  priority: 100
+}
+// Assignment:
+{
+  scopeType: "workspace",
+  workspaceId: "dev-workspace",
+  status: "active"
+}
+```
+
+**Effect**: All tools in the dev workspace are allowed without approval.
+
+### Require Approval for Destructive Operations
+
+```typescript
+// Policy Set: "Production"
+// Rule 1: Allow all read operations
+{
+  selectorType: "namespace",
+  namespacePattern: "github",
+  matchType: "glob",
+  effect: "allow",
+  approvalMode: "auto",
+  priority: 200
+}
+// Rule 2: Require approval for issue creation
+{
+  selectorType: "tool_path",
+  toolPathPattern: "github/create_issue",
+  matchType: "exact",
+  effect: "allow",
+  approvalMode: "required",
+  priority: 300  // Higher priority = evaluated first
+}
+// Assignment:
+{
+  scopeType: "workspace",
+  workspaceId: "prod-workspace",
+  status: "active"
+}
+```
+
+**Effect**: GitHub tools auto-approve, except `create_issue` which requires approval.
+
+### Block Specific Tool
+
+```typescript
+// Policy Set: "Restricted"
+// Rule:
+{
+  selectorType: "tool_path",
+  toolPathPattern: "aws/delete_*",
+  matchType: "glob",
+  effect: "deny",
+  approvalMode: "inherit",
+  priority: 500
+}
+// Assignment:
+{
+  scopeType: "organization",
+  status: "active"
+}
+```
+
+**Effect**: All AWS delete operations are blocked across the organization.
+
+### Conditional Approval
+
+```typescript
+// Policy Set: "Production Deploy"
+// Rule:
+{
+  selectorType: "tool_path",
+  toolPathPattern: "github/create_deployment",
+  matchType: "exact",
+  effect: "allow",
+  approvalMode: "required",
+  argumentConditions: [
+    { key: "environment", operator: "equals", value: "production" }
+  ],
+  priority: 400
+}
+```
+
+**Effect**: Deployments to production require approval. Deployments to other environments follow default rules.
+
+### Account-Specific Policy
+
+```typescript
+// Policy Set: "Admin Tools"
+// Rule:
+{
+  selectorType: "all",
+  matchType: "glob",
+  effect: "allow",
+  approvalMode: "auto",
+  priority: 600
+}
+// Assignment:
+{
+  scopeType: "account",
+  targetAccountId: "account_admin_123",
+  status: "active"
+}
+```
+
+**Effect**: Specific admin account can use all tools without approval.
+
+## Approval Modes
+
+<Tabs>
+  <Tab title="Auto">
+    ```typescript
+    approvalMode: "auto"
+    ```
+    
+    Tool calls execute immediately without human review.
+    
+    **Use for**: Safe, read-only operations, development environments.
+  </Tab>
+  
+  <Tab title="Required">
+    ```typescript
+    approvalMode: "required"
+    ```
+    
+    Tool calls pause execution and create an approval request. A workspace admin must approve or deny.
+    
+    **Use for**: Destructive operations, production deployments, compliance requirements.
+    
+    See [Approvals](/features/approvals) for complete workflow.
+  </Tab>
+  
+  <Tab title="Inherit">
+    ```typescript
+    approvalMode: "inherit"
+    ```
+    
+    Use the approval mode from a lower-priority rule, or default to `"required"` if no rule specifies.
+    
+    **Use for**: Fallback rules that defer to more specific policies.
+  </Tab>
+</Tabs>
+
+## Policy Priority
+
+Rules are evaluated in descending priority order (highest first). Priority determines which rule applies when multiple rules match:
+
+```typescript
+// Example: Conflicting rules
+const rules = [
+  {
+    toolPathPattern: "github/*",
+    effect: "allow",
+    approvalMode: "auto",
+    priority: 100  // Lower priority
+  },
+  {
+    toolPathPattern: "github/delete_*",
+    effect: "deny",
+    approvalMode: "inherit",
+    priority: 200  // Higher priority = evaluated first
+  }
+];
+
+// Tool call: "github/delete_repo"
+// Matches both rules, but priority 200 wins → denied
+```
+
+**Best Practice**: Assign higher priorities to more specific rules.
+
+## Dashboard Workflows
+
+### Creating a Policy
+
+1. Navigate to workspace settings → Access Policies
+2. Click "Create Policy Set"
+3. Enter name and description
+4. Add rules:
+   - Select selector type (all/source/namespace/tool_path)
+   - Enter pattern or source key
+   - Set effect (allow/deny)
+   - Set approval mode (auto/required)
+   - Add argument conditions if needed
+   - Set priority
+5. Create assignments:
+   - Select scope (account/workspace/organization)
+   - Select target account if account-scoped
+   - Optionally filter by clientId
+   - Set status (active/disabled)
+6. Save policy
+
+### Managing Policies
+
+- **Edit rules**: Update patterns, effects, approval modes
+- **Disable assignments**: Set status to `"disabled"` without deleting
+- **Set expiration**: Use `expiresAt` for temporary access
+- **Delete policies**: Remove entire policy set and all assignments
+
+## Best Practices
+
+### Policy Design
+
+- Start with deny-by-default, then add allow rules
+- Use high priorities (500+) for deny rules
+- Use medium priorities (100-400) for allow rules with approval
+- Use low priorities (less than 100) for auto-approve fallbacks
+
+### Development vs. Production
+
+- **Development**: Single "allow all" rule with `approvalMode: "auto"`
+- **Staging**: Allow most tools, require approval for destructive operations
+- **Production**: Require approval for all write operations, auto-approve reads
+
+### Organization Structure
+
+- Use **organization-scoped** assignments for baseline security
+- Use **workspace-scoped** assignments for environment-specific rules
+- Use **account-scoped** assignments for admin overrides
+
+### Argument Conditions
+
+- Use for environment-specific controls (e.g., production vs. staging)
+- Combine with high priorities to override broad allow rules
+- Keep conditions simple to avoid maintenance burden
+
+## Related Features
+
+- [Approvals](/features/approvals) - Human-in-the-loop approval workflows
+- [Tools](/features/tools) - Tool sources subject to policies
+- [Workspaces](/features/workspaces) - Understand scope types
+- [Tasks](/features/tasks) - Task execution and policy enforcement

@@ -1,0 +1,315 @@
+---
+title: 'Approvals API'
+description: 'Convex functions for managing tool execution approvals'
+---
+
+## Overview
+
+The Approvals API manages the approval workflow for tool executions that require human review. When a tool call requires approval based on policy configuration, an approval record is created and must be resolved before execution can proceed.
+
+## Main Functions
+
+### resolveApproval
+
+Resolves a pending approval with an approval or denial decision. This is a workspace mutation that requires admin privileges.
+
+<ParamField path="approvalId" type="string" required>
+  The approval identifier to resolve
+</ParamField>
+
+<ParamField path="decision" type="'approved' | 'denied'" required>
+  The approval decision
+</ParamField>
+
+<ParamField path="reviewerId" type="string">
+  Identifier of the reviewer making the decision
+</ParamField>
+
+<ParamField path="reason" type="string">
+  Optional reason for the decision
+</ParamField>
+
+Returns the updated approval record.
+
+```javascript
+// Approve a tool execution
+await resolveApproval({
+  approvalId: 'approval_abc123',
+  decision: 'approved',
+  reviewerId: 'user_xyz',
+  reason: 'Verified request authenticity'
+});
+
+// Deny a tool execution
+await resolveApproval({
+  approvalId: 'approval_abc123',
+  decision: 'denied',
+  reviewerId: 'user_xyz',
+  reason: 'Insufficient justification'
+});
+```
+
+## Internal Functions
+
+### createApproval
+
+Creates a new approval record for a tool execution.
+
+<ParamField path="id" type="string" required>
+  Unique approval identifier
+</ParamField>
+
+<ParamField path="taskId" type="string" required>
+  The task requesting tool execution
+</ParamField>
+
+<ParamField path="toolPath" type="string" required>
+  Full path of the tool being invoked (e.g., `"github.create_issue"`)
+</ParamField>
+
+<ParamField path="input" type="object">
+  The input parameters passed to the tool
+</ParamField>
+
+<ResponseField name="id" type="string">
+  Unique approval identifier
+</ResponseField>
+
+<ResponseField name="taskId" type="string">
+  Associated task ID
+</ResponseField>
+
+<ResponseField name="toolPath" type="string">
+  Tool path requiring approval
+</ResponseField>
+
+<ResponseField name="input" type="unknown">
+  Tool input parameters
+</ResponseField>
+
+<ResponseField name="status" type="ApprovalStatus">
+  Current status: `"pending"`, `"approved"`, or `"denied"`
+</ResponseField>
+
+<ResponseField name="reason" type="string" optional>
+  Reason provided for approval/denial decision
+</ResponseField>
+
+<ResponseField name="reviewerId" type="string" optional>
+  Identifier of the reviewer who resolved the approval
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp when approval was created
+</ResponseField>
+
+<ResponseField name="resolvedAt" type="number" optional>
+  Unix timestamp when approval was resolved
+</ResponseField>
+
+```javascript
+const approval = await createApproval({
+  id: 'approval_abc123',
+  taskId: 'task_xyz',
+  toolPath: 'github.delete_repository',
+  input: { owner: 'myorg', repo: 'sensitive-repo' }
+});
+```
+
+### getApproval
+
+Retrieves an approval by its ID.
+
+<ParamField path="approvalId" type="string" required>
+  The approval identifier
+</ParamField>
+
+Returns the approval record or `null` if not found.
+
+```javascript
+const approval = await getApproval({ approvalId: 'approval_abc123' });
+if (approval && approval.status === 'pending') {
+  console.log('Approval is still pending');
+}
+```
+
+### listApprovals
+
+Lists approvals in a workspace, optionally filtered by status.
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  Workspace to list approvals from
+</ParamField>
+
+<ParamField path="status" type="ApprovalStatus">
+  Filter by status: `"pending"`, `"approved"`, or `"denied"`
+</ParamField>
+
+Returns up to 500 approvals, ordered by creation time (most recent first).
+
+```javascript
+// Get all pending approvals
+const pending = await listApprovals({
+  workspaceId,
+  status: 'pending'
+});
+
+// Get all approvals (any status)
+const allApprovals = await listApprovals({ workspaceId });
+```
+
+### listPendingApprovals
+
+Retrieves pending approvals with associated task information.
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  Workspace identifier
+</ParamField>
+
+Returns an array of approval records enriched with task details:
+
+<ResponseField name="id" type="string">
+  Approval identifier
+</ResponseField>
+
+<ResponseField name="taskId" type="string">
+  Associated task ID
+</ResponseField>
+
+<ResponseField name="toolPath" type="string">
+  Tool requiring approval
+</ResponseField>
+
+<ResponseField name="input" type="unknown">
+  Tool input parameters
+</ResponseField>
+
+<ResponseField name="status" type="'pending'">
+  Always `"pending"` for this query
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  When approval was created
+</ResponseField>
+
+<ResponseField name="task" type="object">
+  Associated task information
+  
+  <ResponseField name="task.id" type="string">
+    Task identifier
+  </ResponseField>
+  
+  <ResponseField name="task.status" type="TaskStatus">
+    Current task status
+  </ResponseField>
+  
+  <ResponseField name="task.runtimeId" type="string">
+    Runtime environment
+  </ResponseField>
+  
+  <ResponseField name="task.timeoutMs" type="number">
+    Task timeout
+  </ResponseField>
+  
+  <ResponseField name="task.createdAt" type="number">
+    Task creation time
+  </ResponseField>
+</ResponseField>
+
+Returns up to 500 pending approvals, ordered by creation time (oldest first).
+
+```javascript
+const pendingWithTasks = await listPendingApprovals({ workspaceId });
+
+for (const approval of pendingWithTasks) {
+  console.log(`Tool: ${approval.toolPath}`);
+  console.log(`Task: ${approval.task.id} (${approval.task.status})`);
+  console.log(`Created: ${new Date(approval.createdAt).toISOString()}`);
+}
+```
+
+### resolveApproval (Internal)
+
+Internal mutation for resolving approvals without workspace context validation.
+
+<ParamField path="approvalId" type="string" required>
+  Approval identifier
+</ParamField>
+
+<ParamField path="decision" type="'approved' | 'denied'" required>
+  Approval decision
+</ParamField>
+
+<ParamField path="reviewerId" type="string">
+  Reviewer identifier
+</ParamField>
+
+<ParamField path="reason" type="string">
+  Decision reason
+</ParamField>
+
+Returns the updated approval or `null` if the approval wasn't in pending status.
+
+### getApprovalInWorkspace
+
+Retrieves an approval only if it belongs to the specified workspace.
+
+<ParamField path="approvalId" type="string" required>
+  Approval identifier
+</ParamField>
+
+<ParamField path="workspaceId" type="Id<'workspaces'>" required>
+  Workspace ID to verify against
+</ParamField>
+
+Returns the approval or `null` if not found or workspace mismatch.
+
+```javascript
+const approval = await getApprovalInWorkspace({
+  approvalId: 'approval_abc123',
+  workspaceId: workspaceId
+});
+
+if (!approval) {
+  console.log('Approval not found in this workspace');
+}
+```
+
+## Approval Workflow
+
+The typical approval workflow:
+
+1. **Task Execution**: A task attempts to call a tool that requires approval
+2. **Approval Creation**: System creates an approval record with `status: "pending"`
+3. **Notification**: Workspace admins are notified of pending approval
+4. **Review**: Admin reviews the tool path, input parameters, and context
+5. **Resolution**: Admin calls `resolveApproval()` with decision
+6. **Continuation**: Task execution resumes based on the decision
+
+```javascript
+// Monitor pending approvals
+const pending = await listPendingApprovals({ workspaceId });
+
+for (const approval of pending) {
+  // Review approval details
+  console.log(`Tool: ${approval.toolPath}`);
+  console.log(`Input:`, approval.input);
+  
+  // Make decision based on policy
+  const shouldApprove = await reviewApprovalPolicy(approval);
+  
+  await resolveApproval({
+    approvalId: approval.id,
+    decision: shouldApprove ? 'approved' : 'denied',
+    reviewerId: currentUserId,
+    reason: shouldApprove 
+      ? 'Matches security policy'
+      : 'Requires additional authorization'
+  });
+}
+```
+
+## Related Types
+
+- `ApprovalStatus`: `"pending"` | `"approved"` | `"denied"`
+- `TaskStatus`: `"queued"` | `"running"` | `"completed"` | `"failed"` | `"timed_out"` | `"denied"`
