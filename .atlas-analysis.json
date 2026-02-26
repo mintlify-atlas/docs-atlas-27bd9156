@@ -1,0 +1,104 @@
+{
+  "projectType": "saas",
+  "projectName": "Executor",
+  "projectDescription": "Convex-native execution platform for MCP-driven agents with task execution, approvals, and workspace management.",
+  "theme": "aspen",
+  "primaryColor": "#0066CC",
+  "lightColor": "#4D94FF",
+  "darkColor": "#004999",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/tasks",
+              "features/approvals",
+              "features/workspaces",
+              "features/tools",
+              "features/credentials",
+              "features/policies"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/self-hosting",
+              "deployment/cloud",
+              "deployment/configuration"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/mcp",
+              "integrations/oauth",
+              "integrations/workos",
+              "integrations/stripe"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "MCP Endpoints",
+            "pages": [
+              "api/mcp-execute",
+              "api/mcp-anonymous",
+              "api/mcp-tools"
+            ]
+          },
+          {
+            "group": "HTTP Routes",
+            "pages": [
+              "api/http-overview",
+              "api/oauth-endpoints",
+              "api/webhooks"
+            ]
+          },
+          {
+            "group": "Convex Functions",
+            "pages": [
+              "api/tasks-api",
+              "api/approvals-api",
+              "api/workspaces-api",
+              "api/tools-api"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "MCP endpoint hosting with execute tool",
+    "Task execution with approval workflows",
+    "Workspace and organization management",
+    "Tool source discovery (OpenAPI, GraphQL, MCP)",
+    "Self-hosting with binary CLI",
+    "Credential and policy management",
+    "Web UI for tasks, approvals, and tools",
+    "Billing and team management"
+  ],
+  "publicApiSurface": [
+    "/mcp - MCP endpoint with WorkOS OAuth",
+    "/mcp/anonymous - MCP endpoint with API key auth",
+    "execute - MCP tool for code execution",
+    "createTask - Convex function to queue tasks",
+    "resolveApproval - Convex function for approval resolution",
+    "executor doctor - CLI command for diagnostics",
+    "executor up - CLI command to start backend",
+    "executor claude - CLI command for Claude Code integration"
+  ]
+}
